@@ -112,7 +112,7 @@ Two commercial layers:
 - Nail OS Base: clients, client profiles, services, internal calendar, manual appointments, revenue records, expenses, inventory, profitability, reports, documents, files, branding, settings.
 - Car Rental OS Base: customers, fleet, drivers, internal reservations, internal calendar, payment/deposit records, expenses, maintenance, inspections, incidents, contracts, documents, reports, branding, settings.
 
-**Connected Services** — recurring integrations/automation: public booking, public reservation requests, email sending (confirmations, reminders, follow-ups), online payment/deposit collection, payment gateway integrations, Google Calendar sync, customer portals, scheduled automations, SMS (later).
+**Connected Services** — recurring integrations/automation: public booking, public reservation requests, email sending (confirmations, reminders, follow-ups), online payment/deposit collection, payment gateway integrations, Google Calendar sync, customer portals, scheduled automations. **[Item #11]** SMS is not part of V1; it may be added later as a Connected Service only by explicit scope amendment.
 
 Connected Services are implemented through entitlements. Cancelling Connected must never destroy or corrupt Base OS data.
 
@@ -1277,6 +1277,71 @@ Phase 1 deploys the skeleton to Production **at least once** to prove the full r
 - [ ] A **draft** recovery procedure records how each D1 database and the R2 bucket would be restored.
 - **Hard pre-customer gate:** before the first real Altreia customer/business is onboarded, a documented **and verified** recovery procedure must exist covering Control D1, Operational D1, R2 customer files where applicable, configuration/secrets recovery where appropriate, and migration-related recovery. Completing later product phases does not lift this gate (§37).
 
+## 35j. Phase 1 Exclusions — LOCKED (§47 Item #11)
+
+**Scope note:** Altreia Cloud only.
+
+**Strict scope rule:** Phase 1 builds **only** what §35i explicitly requires. An excluded feature is never pulled into Phase 1 because it looks easy, a package already supports it, related schema already exists, it would be convenient, a nearby file is already being edited, or it is "almost done." Moving anything into Phase 1 requires an explicit, documented architecture/scope amendment.
+
+**Authentication and accounts → Phase 2**
+- Login, logout, sessions, and the session-storage decision.
+- Passwords, account recovery, email verification, MFA.
+- Customer signup and customer user accounts.
+- Real enforcement by the authentication, realm, permission, and tenant middleware (Phase 1 has deny-by-default placeholders only).
+- **Creating the first SUPER_ADMIN or any internal user.** Phase 1 has only the schema, seeded system roles/permissions, and internal-account foundation. The Phase 2 bootstrap must be a secure, explicitly designed mechanism — never a seeded known admin password.
+- **Application-level rate limiting** and Turnstile on authentication surfaces (login, recovery, verification, MFA). Not built for the Phase 1 health endpoints. Cloudflare platform/network protections may still be used.
+
+**Businesses and tenancy → Phase 2 / 3**
+- Businesses, memberships, owner/staff roles, real tenant context from sessions, business suspension behavior.
+
+**Products, plans, subscriptions → Phase 3**
+- Product creation and management behavior/UI, product admin grants.
+- Plans, plan prices, pricing configuration.
+- Subscriptions, subscription states, expiry and read-only behavior.
+- Entitlement resolution, overrides, feature guards.
+- The product router.
+
+**Sales, payments, commissions → Phase 3 / 3A**
+- Sales CRM (leads, notes, attribution, dashboard).
+- Platform payment recording.
+- Commission rules, ledger, reversals, payouts.
+
+**Workspace and UI → Phase 4**
+- `platform/ui` exists only as an empty structural package.
+- No design system, components, app shell, navigation, mobile layout, modals, toasts, loaders, empty states, unsaved-change warnings, theming, dark mode, branding, or business settings screens.
+- Phase 1 frontends are limited to the minimal placeholder/health-check pages in §35i.
+
+**Files and storage → Phase 5**
+- Uploads, downloads, file metadata/categories, quotas, usage, image optimization, signed links. R2 buckets exist and bind, nothing more.
+
+**Customer identity and exports → Phase 6 / 6A**
+- Shared customer identity, product customer extensions, Export Center, `data_export` behavior, CSV/XLSX generation.
+
+**Products → Phase 7 / 8 / later**
+- All Nail Tech OS, Car Rental OS, and ResortFlow logic, screens, tables, and export datasets.
+
+**Connected Services → Phase 10–13**
+- Email providers, templates, sending.
+- Public booking and reservation flows.
+- Business reminders, automations, scheduled business jobs (the Phase 1 cron handler is a no-op).
+- Payment providers, payment links, webhooks.
+- Google Calendar sync.
+- **SMS is not part of V1** at all, including Phases 10–13. The Connected Services architecture may add it later without changing Base, but only by explicit scope amendment.
+
+**Operations**
+- Final custom domain (not a blocker, §35i).
+- Logpush, external logging providers, non-email alert destinations.
+- Full verified recovery procedure (a draft only; the full procedure is the pre-customer gate, §37).
+- Changelog/release-note automation.
+- Load/performance testing beyond Phase 1 needs.
+
+**Product creation vs. OS Builder**
+- Authorized internal administrators creating and managing product **records** (§35c A3) is not a no-code OS Builder.
+- In V1, new OS products are **developer-created product modules** registered with the platform.
+- The Phase 14 OS Builder (visual/self-service product building) remains outside V1 and is not pulled forward because administrators can manage product records.
+
+**Never in V1 (§45 stands)** — visual page builder, Bubble/Retool clone, arbitrary workflows, scripting language, arbitrary custom fields, marketplace, native mobile apps, advanced AI agents, multi-location enterprise architecture, SMS, universal asset abstraction, complicated multi-product accounts, excessive subscription tiers, complex white-label domains, Kubernetes, microservice sprawl. Also: OS Builder, Enterprise-specific features, support impersonation.
+
 ## 36. Security Requirements (pre-production)
 
 Secure authentication, secure sessions, role authorization, tenant isolation, cross-tenant security tests, file authorization, rate limiting, upload validation, sensitive document handling, audit logging, data deletion, retention policies, account suspension, account recovery, basic abuse prevention.
@@ -1484,7 +1549,7 @@ The high-level architecture is locked. Before Phase 1 implementation begins, the
 8. ~~Testing stack~~ — **RESOLVED / LOCKED** (see §35g, new)
 9. ~~Coding standards~~ — **RESOLVED / LOCKED** (see §35h, new)
 10. ~~Phase 1 acceptance criteria~~ — **RESOLVED / LOCKED** (see §35i, new)
-11. Exclusions for Phase 1
+11. ~~Exclusions for Phase 1~~ — **RESOLVED / LOCKED** (see §35j, new)
 12. Deployment/tagging procedure
 
 ## Final Architecture Rule
