@@ -518,8 +518,11 @@ audit_logs
 ```sql
 schema_migrations
   version               TEXT PK
+  checksum              TEXT NOT NULL
   applied_at            INTEGER NOT NULL
 ```
+
+Control D1 carries an identical `schema_migrations` table (see §38a).
 
 No product domain tables. Phase 1 deliverables here are the provisioned/migrated database and the tenant-aware access layer (`tenantData.forBusiness(business_id)`) plus its cross-tenant access test suite — not product schemas, which belong to Phases 6–8.
 
@@ -538,6 +541,43 @@ Must exist before production launch: database restore process, accidental-deleti
 ## 38. Migration Strategy
 
 Every schema change uses versioned migrations. Separate migration streams for control plane vs. operational schema. Product-specific schema changes are tracked and tested. Migrations run against staging before production. No manual production schema edits.
+
+## 38a. Migration Naming & Versioning — LOCKED (§47 Item #4)
+
+**Scope note:** Altreia Cloud only.
+
+**Streams and layout**
+```
+database/
+├── control/migrations/        # Control D1 stream
+└── operational/migrations/    # Operational D1 stream
+```
+- Control D1 and Operational D1 have separate, independent migration streams. `control/0005` and `operational/0005` have no implied relationship.
+- A rare change spanning both is documented as a pair sharing a description suffix (e.g. `control/0007_add_x.sql` + `operational/0004_add_x.sql`).
+
+**Naming**
+- `NNNN_snake_case_description.sql` — 4-digit, zero-padded, strictly increasing per stream, starting at `0001`.
+- The description names the change, not just the table (e.g. `0004_split_plan_pricing_from_plans.sql`).
+- Merged migration numbers are never reused or renumbered.
+
+**Immutability**
+- Merged/applied migrations are immutable. Mistakes are fixed forward with a new migration.
+- Both Control D1 and Operational D1 maintain `schema_migrations` (`version`, `checksum`, `applied_at`).
+- Migration tooling must refuse to proceed if it detects a previously-applied migration whose checksum has changed, or a gap in the sequence.
+
+**Environment order**
+- Apply development → staging → production. Production is never ahead of staging.
+- No manual production schema edits (§38).
+
+**Rollback and recovery**
+- Rollback files are **optional**, and exist only where a migration can be safely and meaningfully reversed: `NNNN_snake_case_description.rollback.sql`.
+- No artificial rollback SQL for migrations that cannot genuinely restore the previous state.
+- Irreversible or destructive migrations must explicitly declare themselves **forward-only** in a header comment.
+- Schema rollback is not data recovery. A rollback file restores structure, not lost data.
+- Any destructive production migration must have a documented recovery strategy before production deployment.
+- Where data loss is possible, an appropriate backup/recovery checkpoint (§37) is required before applying the migration to production.
+- For significant schema changes, prefer **expand → migrate/backfill → verify → contract** over destructive one-step migrations where practical.
+- Production rollback must never silently discard customer data.
 
 ## 39. Environment Strategy
 
@@ -618,7 +658,7 @@ The high-level architecture is locked. Before Phase 1 implementation begins, the
 1. ~~Exact Phase 1 repository structure~~ — **RESOLVED / LOCKED** (see §35, updated)
 2. ~~Exact Cloudflare resources~~ — **RESOLVED / LOCKED** (see §35a, new)
 3. ~~Exact database table schemas for Phase 1~~ — **RESOLVED / LOCKED** (see §35b, new)
-4. Migration naming/versioning convention
+4. ~~Migration naming/versioning convention~~ — **RESOLVED / LOCKED** (see §38a, new)
 5. Development/staging/production configuration
 6. API response/error conventions
 7. Logging conventions
