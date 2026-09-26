@@ -1192,6 +1192,91 @@ commission_payout_items
 - Required automated checks must pass before merge.
 - Security-, money-, tenancy-, authorization-, and migration-sensitive changes get particularly careful review.
 
+## 35i. Phase 1 Acceptance Criteria — LOCKED (§47 Item #10)
+
+**Scope note:** Altreia Cloud only. Phase 1 is complete only when every item below is true and can be shown in the repo, in CI, or in the Cloudflare environments.
+
+**Phase boundary:** the Control D1 schema created in Phase 1 includes tables whose features come later. Creating them does **not** mean Phase 1 implements customer onboarding, subscription behavior, product management UI, Sales workflows, commissions, payouts, exports, or payment processing. The phase boundaries in §44 and §35c/§35f stand.
+
+### A. Monorepo
+- [ ] pnpm workspace with the locked §35 structure: `apps/`, `platform/`, `products/`, `connected/`, `workers/`, `database/`, `tests/`.
+- [ ] `products/*` and `connected/*` exist as empty placeholders with no business logic.
+- [ ] Strict TypeScript, ESLint, Prettier, and a shared tsconfig across all packages.
+- [ ] Lint rules enforce the §35h module boundaries, with a test proving a forbidden import fails.
+- [ ] `.dev.vars.example` committed; `.dev.vars` git-ignored.
+- [ ] Dependabot configured; lockfile committed.
+
+### B. Apps
+- [ ] `apps/admin` and `apps/app` built with React + Vite + TypeScript, each running locally.
+- [ ] Each shows a placeholder page that calls its API health endpoint.
+- [ ] Admin shows a LOCAL/DEV/STAGING banner outside production.
+- [ ] No login, business, or product screens.
+
+### C. API and jobs Workers
+- [ ] `workers/api` on Hono with `/v1/` (customer) and `/admin/v1/` (internal) route groups.
+- [ ] `GET /v1/health` and `GET /admin/v1/health` return the §35d envelope.
+- [ ] Every response carries `request_id` / `X-Request-Id`.
+- [ ] Shared error registry and central error serialization; unknown routes → 404 and unhandled errors → 500 in the standard format, with no internals.
+- [ ] snake_case ↔ camelCase conversion at the API boundary, with tests.
+- [ ] Route input validated with Zod.
+- [ ] `workers/jobs` with a no-op queue consumer and no-op cron handler, logging through the shared logger with propagated IDs.
+
+### D. Platform foundation
+- [ ] Shared logger per §35e, with a redaction test.
+- [ ] Validated environment/config loader that fails loudly at startup and never falls back across environments.
+- [ ] Shared ULID, Money, and time helpers with unit tests.
+- [ ] Middleware slots for authentication, realm, permission, entitlement, and tenant checks. Protected application routes are **deny-by-default** until Phase 2 fills them in.
+- [ ] Health endpoints are the explicit exception: they may be unauthenticated, and they expose only minimal service-health information — never secrets, bindings, database identifiers, infrastructure details, stack traces, or customer/business data.
+
+### E. Databases and migrations
+- [ ] Control D1 and Operational D1 provisioned for Local, DEV, Staging, and Production.
+- [ ] Migration tooling for both streams, recording `schema_migrations` with checksums and refusing on changed files or sequence gaps (§38a).
+- [ ] Control D1 migrations create the full locked Phase 1 schema: §35b tables with the Amendment A and B changes, the §35c A7 internal identity/RBAC tables, and all indexes, foreign keys, uniqueness rules, and CHECK constraints.
+- [ ] Operational D1 contains only migration infrastructure. The isolation mechanism used to test the tenant data layer (e.g. a test-only table) exists only in test environments, never in hosted migrations.
+- [ ] Tenant-aware data layer (`tenantData.forBusiness(businessId)`) is the only path to Operational D1, with tests proving isolation.
+- [ ] A test proves route handlers and apps cannot reach D1 directly.
+
+**Seed data in Phase 1**
+- May be seeded: system roles, the permission catalog, default system role→permission mappings (PRODUCT_ADMIN without financial permissions; Sales never with log access).
+- Not seeded anywhere: real people, businesses, or customer data. No fake customer, business, or product records are needed in Phase 1.
+- Later phases **may** create entirely synthetic staging fixtures (test internal and customer accounts, fake businesses, subscriptions, products/configurations, Sales CRM records, QA scenarios).
+- Production never receives staging/demo fixtures. Production customer data is never copied into staging (§39a).
+
+### F. Cloudflare environments
+- [ ] DEV, Staging, and Production each have separate D1, R2, KV, Queues, and Workers named `altreia-<resource>-<env>` (§39a).
+- [ ] Separate secrets per environment; production bindings appear nowhere in DEV or Staging config.
+- [ ] Cloudflare Access protects hosted Staging and Production Admin.
+- [ ] R2 buckets are private.
+- [ ] **Domain:** the final Altreia custom domain is **not** a Phase 1 blocker. Use it if available; otherwise use Cloudflare-provided hosted addresses where possible. Hostnames are configuration only, never hard-coded, so connecting the final domain later needs no application or business-logic changes.
+
+### G. Tests and CI
+- [ ] GitHub Actions on every PR: typecheck, lint, unit, integration, migration validation, security, environment guardrails, local E2E smoke. All required to merge.
+- [ ] Phase 1 security suite: cross-tenant access through the tenant data layer (nothing returned / 404); wrong-realm requests rejected in both directions (stub sessions until Phase 2); deny-by-default middleware on protected routes.
+- [ ] Guardrail tests: startup fails on a missing binding; no config resolves to another environment's resources.
+- [ ] Base-without-Connected check with all `connected/*` modules absent.
+- [ ] Coverage reported.
+- [ ] Merge to `main` auto-deploys Staging, and Playwright smoke (health checks, environment banner) passes there.
+
+### H. Production infrastructure verification
+Phase 1 deploys the skeleton to Production **at least once** to prove the full release path while no customer data exists. This is infrastructure validation, **not** Altreia's public launch.
+- [ ] Production Workers deploy correctly.
+- [ ] Production frontend deployments load.
+- [ ] Production Control and Operational D1 bindings resolve.
+- [ ] Production migrations apply through the approved process (§38a).
+- [ ] Production R2, KV, and Queue bindings resolve where the skeleton needs them.
+- [ ] Production secrets/config validation works.
+- [ ] Production Cloudflare Access protects Admin.
+- [ ] Production cannot resolve or fall back to DEV or Staging resources.
+- [ ] Health checks succeed.
+- [ ] No customer onboarding or business activity is enabled.
+
+**Production safety:** verification uses system-safe checks only. No real or fake businesses, subscriptions, customers, Sales users, products, payments, or operational records are created in Production to prove deployment. After verification, Production stays essentially dormant until later phases.
+
+### I. Documentation and recovery
+- [ ] README covers local setup, running tests, running migrations, and the environment layout.
+- [ ] A **draft** recovery procedure records how each D1 database and the R2 bucket would be restored.
+- **Hard pre-customer gate:** before the first real Altreia customer/business is onboarded, a documented **and verified** recovery procedure must exist covering Control D1, Operational D1, R2 customer files where applicable, configuration/secrets recovery where appropriate, and migration-related recovery. Completing later product phases does not lift this gate (§37).
+
 ## 36. Security Requirements (pre-production)
 
 Secure authentication, secure sessions, role authorization, tenant isolation, cross-tenant security tests, file authorization, rate limiting, upload validation, sensitive document handling, audit logging, data deletion, retention policies, account suspension, account recovery, basic abuse prevention.
@@ -1205,6 +1290,8 @@ Car Rental OS may store driver's licenses and IDs — these require especially c
 ## 37. Backup & Recovery
 
 Must exist before production launch: database restore process, accidental-deletion recovery, file recovery strategy, business data export, migration rollback strategy, recovery documentation. Cloud provider recovery capabilities may be used but do not replace our own operational recovery procedure.
+
+**Hard pre-customer gate (§35i):** no real customer/business may be onboarded until a documented and verified recovery procedure exists for Control D1, Operational D1, R2 customer files where applicable, configuration/secrets where appropriate, and migration-related recovery. Phase 1 needs only a draft.
 
 ## 38. Migration Strategy
 
@@ -1396,7 +1483,7 @@ The high-level architecture is locked. Before Phase 1 implementation begins, the
 7. ~~Logging conventions~~ — **RESOLVED / LOCKED** (see §35e, new)
 8. ~~Testing stack~~ — **RESOLVED / LOCKED** (see §35g, new)
 9. ~~Coding standards~~ — **RESOLVED / LOCKED** (see §35h, new)
-10. Phase 1 acceptance criteria
+10. ~~Phase 1 acceptance criteria~~ — **RESOLVED / LOCKED** (see §35i, new)
 11. Exclusions for Phase 1
 12. Deployment/tagging procedure
 
