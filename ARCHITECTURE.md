@@ -86,6 +86,8 @@ A separate internal application. Admin users can: create businesses, assign prod
 
 Admin must never expose normal customer UI permissions.
 
+**[Amendment A]** Admin is used by multiple internal Altreia accounts with data-driven roles (SUPER_ADMIN, PRODUCT_ADMIN, SALES, and future roles). Authorized administrators can create and manage Altreia OS products through explicit product grants. Sales users get an OWN-scoped sales CRM and commission dashboard inside Admin. See §35c.
+
 ## 7. Business Model
 
 Every business account has: a business record, an owner, optional members, an assigned product, subscription status, product configuration, entitlements, branding, storage quota, settings, and audit history.
@@ -126,6 +128,8 @@ Three separate systems — never collapsed into one feature-flag system:
 - **Entitlements** — what a business currently has access to (e.g. `booking.public`, `email.transactional`, `payments.online`, `calendar.sync`). Sourced from plan grants, promos, manual overrides, beta access.
 - **Permissions** — what an individual user is allowed to do (e.g. owner: `business.settings.write`, `users.manage`; staff: `appointments.write`, `clients.read`).
 
+**[Amendment A]** A fourth, separate system: **Internal Altreia permissions** — what an Altreia team member may do in Admin (e.g. `products.create`, `sales.crm.own`). These are never mixed with customer permissions, entitlements, or product configuration. See §35c.
+
 ## 13. Entitlement Overrides
 
 Admin can temporarily or permanently override entitlements:
@@ -139,6 +143,8 @@ Use cases: beta access, free trial, support workaround, temporary promotion, spe
 ## 14. Authentication
 
 Platform-level. Recommended: Better Auth or equivalent — secure sessions, business membership checks, role-based authorization, server-side authorization enforcement. Frontend checks are UX only; access control is enforced server-side.
+
+**[Amendment A]** Two separate account realms: customer accounts (`users`, used in `apps/app`) and internal Altreia accounts (`internal_users`, used in `apps/admin`), with separate sessions and authorization and no realm switching. MFA is mandatory for internal accounts. See §35c.
 
 ## 15. Tenant Isolation
 
@@ -164,6 +170,8 @@ V1 will not use one D1 database per business by default. The data-access layer m
 At least two conceptual database domains:
 
 **Control Plane** (platform data): `users`, `businesses`, `business_members`, `products`, `plans`, `subscriptions`, `subscription_periods`, `entitlements`, `plan_entitlements`, `entitlement_overrides`, `business_branding`, `storage_usage`, `audit_logs`. Potential additions: `support_notes`, `feature_flags`, `product_settings`.
+
+**[Amendment A]** Control plane also holds internal identity/RBAC (`internal_users`, `internal_roles`, `internal_permissions`, `internal_role_permissions`, `internal_user_roles`), `product_admin_grants`, `business_profiles`, `plan_prices`, `platform_payments`, Altreia sales CRM (`sales_leads`, `sales_notes`, `sales_attributions`), and commissions (`commission_rules`, `commission_ledger_entries`, `commission_payouts`, `commission_payout_items`). Altreia CRM data lives here; tenant operational data never does. See §35b and §35c.
 
 **Operational Data** (business operations): shared minimal customer identity where appropriate, product-specific domain data, product financial data, file metadata references, operational history.
 
@@ -258,6 +266,9 @@ altreia/
 │   ├── permissions/
 │   ├── billing/                  # products, plans, subscriptions
 │   ├── audit/
+│   ├── internal-auth/            # [Amendment A] internal accounts, internal RBAC, product grants
+│   ├── sales/                    # [Amendment A] Altreia sales CRM + attribution
+│   ├── commissions/              # [Amendment A] rules, ledger, payouts
 │   └── utils/                    # shared utilities (money, dates, formatting, validation)
 │
 ├── products/                     # Isolated product modules — one per OS
@@ -327,6 +338,7 @@ Preserves the Phase 0 principle: *"Share infrastructure aggressively. Share logi
 **Admin protection — both layers required**
 - **Cloudflare Access / Zero Trust** in front of `apps/admin`, as an additional network-level boundary.
 - **Application-level authentication and authorization** inside `apps/admin`, independent of Access.
+- **[Amendment A]** Access policies must admit every internal role that uses Admin, including Sales. Access still only adds a boundary; internal permissions decide what each person can do.
 - Cloudflare Access is additive, not a substitute: application permissions (roles, entitlements) are enforced regardless of whether Access is reachable, misconfigured, or bypassed at the edge.
 
 **Compute, jobs, and supporting resources**
@@ -395,6 +407,7 @@ business_members
 business_profiles
   business_id           TEXT PK REFERENCES businesses(id)
   display_name          TEXT                     -- optional override for public-facing display; falls back to businesses.name if null
+  contact_name          TEXT                     -- [Amendment A] main contact person
   email                 TEXT
   phone                 TEXT
   address_line_1        TEXT
@@ -418,6 +431,9 @@ products
   code                  TEXT PK                  -- 'nail_tech_os', 'car_rental_os', 'resortflow'
   name                  TEXT NOT NULL
   is_published          INTEGER NOT NULL DEFAULT 0
+  created_by            TEXT REFERENCES internal_users(id)   -- [Amendment A] provenance only, never authorization
+  created_at            INTEGER NOT NULL                     -- [Amendment A]
+  updated_at            INTEGER NOT NULL                     -- [Amendment A]
 
 plans
   id                    TEXT PK                  -- ULID
@@ -485,7 +501,7 @@ entitlement_overrides
   granted               INTEGER NOT NULL         -- 0/1
   reason                TEXT
   expires_at            INTEGER
-  created_by            TEXT NOT NULL REFERENCES users(id)
+  created_by            TEXT NOT NULL REFERENCES internal_users(id)   -- [Amendment A] was users(id)
   created_at            INTEGER NOT NULL
   INDEX idx_entitlement_overrides_business (business_id)
 
@@ -498,15 +514,21 @@ storage_usage
 audit_logs
   id                    TEXT PK                  -- ULID
   business_id           TEXT REFERENCES businesses(id)   -- nullable for platform-level events
-  actor_user_id         TEXT REFERENCES users(id)
+  actor_type            TEXT NOT NULL            -- [Amendment A] CUSTOMER_USER | INTERNAL_USER | SYSTEM
+  actor_id              TEXT                     -- [Amendment A] users.id or internal_users.id per actor_type; null for SYSTEM
   action                TEXT NOT NULL
   target_type           TEXT
   target_id             TEXT
   metadata              TEXT                     -- JSON
   created_at            INTEGER NOT NULL
   INDEX idx_audit_logs_business (business_id)
-  INDEX idx_audit_logs_actor (actor_user_id)
+  INDEX idx_audit_logs_actor (actor_type, actor_id)
+  CHECK (actor_type IN ('CUSTOMER_USER','INTERNAL_USER','SYSTEM'))
+-- [Amendment A] replaces actor_user_id so both account realms and
+-- automated jobs can be recorded as actors.
 ```
+
+**[Amendment A] additions to Control D1:** `business_profiles` gains `contact_name TEXT` (the business's main contact person). The internal identity/RBAC tables in §35c are also part of the Phase 1 Control D1 schema. The remaining §35c tables are designed now but created by migrations in their own phases.
 
 **Canonical naming, defined:**
 - `businesses.name` is the canonical business name (system of record, used in control-plane logic, billing, admin listings).
@@ -526,13 +548,320 @@ Control D1 carries an identical `schema_migrations` table (see §38a).
 
 No product domain tables. Phase 1 deliverables here are the provisioned/migrated database and the tenant-aware access layer (`tenantData.forBusiness(business_id)`) plus its cross-tenant access test suite — not product schemas, which belong to Phases 6–8.
 
-**Concept boundary (reaffirmed):** `plan_entitlements`/`entitlement_overrides` (access), `plans`/`plan_prices` (billing), and `business_members.role` + a future `permissions` layer (what a member can do) are three distinct systems and are not collapsed, per §12.
+**Concept boundary (reaffirmed):** `plan_entitlements`/`entitlement_overrides` (access), `plans`/`plan_prices` (billing), and `business_members.role` + a future `permissions` layer (what a member can do) are three distinct systems and are not collapsed, per §12. Internal Altreia permissions (§35c) are a fourth, separate system.
+
+## 35c. Phase 0 Amendment A — Internal Accounts, Product Management, Sales Attribution & Commissions — LOCKED
+
+**Scope note:** Altreia Cloud only. This is an explicit Phase 0 amendment approved after §47 Items #1–#5 were locked. Where it changes a locked section, that section carries an `[Amendment A]` marker.
+
+### A1. Two separate account realms
+
+| | Customer realm | Internal Altreia realm |
+|---|---|---|
+| Who | People who use a business's OS | Altreia team: platform operators, product builders, sales |
+| Identity table | `users` | `internal_users` |
+| Authority from | `business_members.role` (+ future customer permissions) | internal roles, permissions, and product grants |
+| App | `apps/app` | `apps/admin` |
+
+- The realms never share a table, role, permission, or session.
+- The customer API rejects internal sessions; the admin API rejects customer sessions. Tests must attempt both crossings.
+- One person who is both an Altreia team member and an Altreia customer has two separate accounts. There is no realm switching.
+- A customer account can never be promoted into an internal account.
+- Support impersonation (staff acting as a customer business) is not part of this amendment. If ever needed, it is a separate, explicit, audited feature.
+
+### A2. Internal roles and permissions (data-driven RBAC)
+
+- Roles are data. Seeded system roles: `SUPER_ADMIN`, `PRODUCT_ADMIN`, `SALES`. New roles and permissions can be added later without a schema change.
+- Application code checks **permissions**, never role names. No individual person's name appears in any role or rule.
+- Each permission has a scope:
+  - **GLOBAL** — applies everywhere.
+  - **PRODUCT** — applies only to products where the user holds an active `product_admin_grant`.
+  - **OWN** — applies only to records attributed to that user.
+- A request is allowed only when one of the user's roles grants the permission **and** its scope is satisfied.
+
+**Seeded role defaults**
+
+| Permission (examples) | Scope | SUPER_ADMIN | PRODUCT_ADMIN | SALES |
+|---|---|---|---|---|
+| `internal_users.manage`, `internal_roles.manage` | GLOBAL | ✓ | | |
+| `platform.config.sensitive.write` | GLOBAL | ✓ | | |
+| `products.create` | GLOBAL | ✓ | ✓ | |
+| `product.config.write`, `product.plans.write` | PRODUCT | ✓ | ✓ (granted products) | |
+| `product.grants.manage` | PRODUCT | ✓ | ✓ (as PRODUCT_OWNER) | |
+| `businesses.read`, `businesses.suspend` | PRODUCT | ✓ | ✓ (granted products) | |
+| `entitlements.override`, `subscriptions.manage` | PRODUCT | ✓ | ✓ (granted products) | |
+| `platform_payments.record` | GLOBAL | ✓ | | |
+| `sales.attribution.manage` | GLOBAL | ✓ | | |
+| `commission_rules.manage` | GLOBAL | ✓ | | |
+| `payouts.manage`, `payouts.approve` | GLOBAL | ✓ | | |
+| `commissions.ledger.read.all` | GLOBAL | ✓ | | |
+| `sales.crm.own` (leads, clients, notes) | OWN | | | ✓ |
+| `commissions.ledger.read.own`, `payouts.read.own` | OWN | | | ✓ |
+| `audit.read` | GLOBAL / PRODUCT | ✓ | ✓ (granted products) | |
+
+- **PRODUCT_ADMIN does not automatically receive financial or sales-management authority**: recording platform payments, managing sales attribution, managing commission rules, and managing/approving payouts are separate permissions held by SUPER_ADMIN by default. An individual PRODUCT_ADMIN may be explicitly granted any of them later. PRODUCT_ADMIN is never equivalent to SUPER_ADMIN.
+
+**Guardrails**
+- Only a SUPER_ADMIN can grant SUPER_ADMIN. The last active SUPER_ADMIN cannot be removed or disabled.
+- Nobody can change their own roles, grants, or attribution.
+- Sales users cannot attribute clients to themselves; attribution is set by a holder of `sales.attribution.manage`.
+- Nobody can approve a payout to themselves. Payout creation and approval should be done by different people where staffing allows.
+- Internal accounts require MFA (method decided with the Phase 2 authentication design).
+
+### A3. Product management
+
+- Any holder of `products.create` can create a new Altreia OS product using the same internal accounts, admin app, and permission system. New products need no new authentication or admin infrastructure.
+- `products.created_by` records provenance only. It is never used for authorization.
+- Authority over a product comes from `product_admin_grants` (`PRODUCT_OWNER | PRODUCT_MANAGER | PRODUCT_VIEWER`). Creating a product automatically grants its creator `PRODUCT_OWNER`. Multiple administrators can hold grants on one product.
+
+### A4. Altreia CRM data vs. tenant operational data
+
+Two different kinds of customer information exist, and the boundary between them is strict:
+
+| Altreia CRM / customer-relationship data | Tenant product / operational data |
+|---|---|
+| Altreia's relationship **with** a business | The business's own private operations |
+| Lives in **Control D1** | Lives in **Operational D1** (and tenant files in R2) |
+| Business name, contact person, business email/phone, product/OS, plan, lead/customer status, date acquired, sales notes/follow-ups, subscription status, payments made to Altreia, commission | Nail clients, appointments, service history, inventory, the business's financial books, renters, reservations, driver info, incidents, operational payments, uploaded operational files |
+| Visible to authorized internal users, and to Sales for **their own** attributed leads/clients | Never visible to Sales. Internal access only through a future explicit, audited support feature |
+
+- Internal roles, including Sales, have **no access path** to Operational D1 or tenant files. The Sales dashboard reads Control D1 only.
+- Phase 6's "no generic CRM" refers to tenant customer records inside a product. Altreia's own lightweight sales CRM described here is a separate, platform-level concern.
+
+### A5. Sales CRM and attribution
+
+- Attribution is platform-level and attached to the control-plane business, so it works across every product (Nail Tech OS, Car Rental OS, ResortFlow, and future products).
+- A Sales user works in a lightweight, OWN-scoped internal CRM inside `apps/admin` (no third frontend): their leads, their clients, contacts, status, notes and follow-ups, subscription status, qualifying Altreia revenue, commission, and payout history.
+- Leads exist before a business account does. When a lead converts, it is linked to the new business and attribution is recorded.
+- Attribution history is never overwritten: changing it closes the current row and opens a new one.
+- Split attribution between multiple reps is supported by `share_bps` (UI can come later).
+- Adding another salesperson later only requires creating a new internal account with the SALES role and giving them their own attributions and, if needed, commission rules.
+
+### A6. Commission engine
+
+**What earns commission:** only a SUCCEEDED `platform_payments` row of type PAYMENT — a customer paying **Altreia** for its subscription. Creating a lead or a business account never earns commission. Payments a business's own clients make to that business (operational data) never earn commission.
+
+**Rules**
+- Support percentage and fixed amounts, one-time and recurring (optionally capped by `max_periods`), product-specific and plan-specific rules, rep-specific rules, and effective dates.
+- Rule selection uses the rule in effect when the payment occurred, most specific first: rep + plan → rep + product → rep → plan → product → global default.
+- Once a rule has produced a ledger entry it is not edited; changes close the rule (`effective_to`) and create a new one.
+- `hold_days` defaults to **0**, so under a zero-day rule a successful qualifying payment creates commission that is immediately earned and available. Any rule may set a hold (7, 14, 30, …) without schema changes.
+
+**Ledger (append-only)**
+- Each entry copies the rule, rate/fixed amount, share, basis amount, product, and plan used at the time. Historical commission is never recalculated from a rep's current rate.
+- Calculation: PERCENTAGE = `basis × rate_bps / 10000 × share_bps / 10000`; FIXED = `fixed_amount × share_bps / 10000`. Integer minor units with one documented rounding rule.
+- Refunds and chargebacks add a negative REVERSAL entry linked to the original, per the rule's `reversal_policy`. Already-paid amounts carry into the next payout; paid payouts are never modified.
+- Corrections are MANUAL_ADJUSTMENT entries with a required reason, permission-gated and audited.
+- `UNIQUE (payment_id, sales_user_id, entry_type)` prevents a retried job or duplicate webhook from paying twice.
+- No UPDATE or DELETE on ledger entries or paid payouts in the data layer, backed by database triggers that reject them.
+
+**Lifecycle and displayed states** (derived from data, not a stored status)
+```
+Lead/client attributed to Sales user        (no money)
+  → Altreia payment SUCCEEDED
+  → EARNED ledger entry written
+  → PENDING while now < payable_after        (zero time under a 0-day hold)
+  → AVAILABLE (earned, not yet paid)
+  → included in a payout: DRAFT → APPROVED → PAID
+Refund/chargeback at any point → REVERSAL entry
+```
+Earned/available is always shown separately from PAID.
+
+### A7. Tables (Control D1)
+
+```sql
+-- Phase 1 schema -------------------------------------------------------
+
+internal_users
+  id                TEXT PK                  -- ULID
+  email             TEXT NOT NULL UNIQUE
+  password_hash     TEXT
+  display_name      TEXT NOT NULL
+  status            TEXT NOT NULL            -- ACTIVE | DISABLED
+  created_at        INTEGER NOT NULL
+  updated_at        INTEGER NOT NULL
+
+internal_roles
+  id                TEXT PK
+  code              TEXT NOT NULL UNIQUE     -- SUPER_ADMIN, PRODUCT_ADMIN, SALES, ...
+  name              TEXT NOT NULL
+  is_system         INTEGER NOT NULL DEFAULT 0
+  created_at        INTEGER NOT NULL
+
+internal_permissions
+  code              TEXT PK
+  description       TEXT NOT NULL
+  scope_type        TEXT NOT NULL            -- GLOBAL | PRODUCT | OWN
+
+internal_role_permissions
+  role_id           TEXT NOT NULL REFERENCES internal_roles(id)
+  permission_code   TEXT NOT NULL REFERENCES internal_permissions(code)
+  PRIMARY KEY (role_id, permission_code)
+
+internal_user_roles
+  internal_user_id  TEXT NOT NULL REFERENCES internal_users(id)
+  role_id           TEXT NOT NULL REFERENCES internal_roles(id)
+  granted_by        TEXT REFERENCES internal_users(id)   -- null only for the bootstrap SUPER_ADMIN
+  created_at        INTEGER NOT NULL
+  PRIMARY KEY (internal_user_id, role_id)
+  INDEX (role_id)
+
+-- Phase 3 --------------------------------------------------------------
+
+product_admin_grants
+  id                TEXT PK
+  product_code      TEXT NOT NULL REFERENCES products(code)
+  internal_user_id  TEXT NOT NULL REFERENCES internal_users(id)
+  access_level      TEXT NOT NULL            -- PRODUCT_OWNER | PRODUCT_MANAGER | PRODUCT_VIEWER
+  granted_by        TEXT NOT NULL REFERENCES internal_users(id)
+  created_at        INTEGER NOT NULL
+  revoked_at        INTEGER
+  INDEX (internal_user_id), INDEX (product_code)
+  UNIQUE INDEX (product_code, internal_user_id) WHERE revoked_at IS NULL
+
+platform_payments
+  id                     TEXT PK
+  business_id            TEXT NOT NULL REFERENCES businesses(id)
+  subscription_id        TEXT NOT NULL REFERENCES subscriptions(id)
+  subscription_period_id TEXT REFERENCES subscription_periods(id)
+  type                   TEXT NOT NULL      -- PAYMENT | REFUND | CHARGEBACK
+  related_payment_id     TEXT REFERENCES platform_payments(id)
+  amount                 INTEGER NOT NULL   -- minor units, positive; type gives direction
+  currency               TEXT NOT NULL
+  status                 TEXT NOT NULL      -- PENDING | SUCCEEDED | FAILED
+  source                 TEXT NOT NULL      -- MANUAL | PROVIDER
+  provider_ref           TEXT               -- unique when present
+  recorded_by            TEXT REFERENCES internal_users(id)
+  occurred_at            INTEGER NOT NULL
+  created_at             INTEGER NOT NULL
+  INDEX (business_id), INDEX (subscription_id)
+  UNIQUE INDEX (provider_ref) WHERE provider_ref IS NOT NULL
+
+sales_leads
+  id                TEXT PK
+  sales_user_id     TEXT NOT NULL REFERENCES internal_users(id)
+  business_name     TEXT NOT NULL
+  contact_name      TEXT
+  email             TEXT
+  phone             TEXT
+  product_code      TEXT REFERENCES products(code)   -- product of interest
+  status            TEXT NOT NULL            -- NEW | CONTACTED | TRIAL | WON | LOST
+  converted_business_id TEXT REFERENCES businesses(id)
+  created_at        INTEGER NOT NULL
+  updated_at        INTEGER NOT NULL
+  INDEX (sales_user_id), INDEX (converted_business_id)
+
+sales_notes
+  id                TEXT PK
+  author_id         TEXT NOT NULL REFERENCES internal_users(id)
+  lead_id           TEXT REFERENCES sales_leads(id)
+  business_id       TEXT REFERENCES businesses(id)
+  body              TEXT NOT NULL
+  follow_up_at      INTEGER
+  created_at        INTEGER NOT NULL
+  INDEX (lead_id), INDEX (business_id), INDEX (author_id, follow_up_at)
+  CHECK (lead_id IS NOT NULL OR business_id IS NOT NULL)
+
+sales_attributions
+  id                TEXT PK
+  business_id       TEXT NOT NULL REFERENCES businesses(id)
+  sales_user_id     TEXT NOT NULL REFERENCES internal_users(id)
+  lead_id           TEXT REFERENCES sales_leads(id)
+  share_bps         INTEGER NOT NULL DEFAULT 10000
+  effective_from    INTEGER NOT NULL
+  effective_to      INTEGER
+  attributed_by     TEXT NOT NULL REFERENCES internal_users(id)
+  reason            TEXT
+  created_at        INTEGER NOT NULL
+  INDEX (sales_user_id), INDEX (business_id)
+  -- active shares per business must total <= 10000 (checked at write time)
+
+-- Sales & Commissions phase --------------------------------------------
+
+commission_rules
+  id                TEXT PK
+  name              TEXT NOT NULL
+  sales_user_id     TEXT REFERENCES internal_users(id)
+  product_code      TEXT REFERENCES products(code)
+  plan_id           TEXT REFERENCES plans(id)
+  calc_type         TEXT NOT NULL            -- PERCENTAGE | FIXED
+  rate_bps          INTEGER
+  fixed_amount      INTEGER
+  currency          TEXT
+  recurrence        TEXT NOT NULL            -- ONE_TIME | RECURRING
+  max_periods       INTEGER
+  hold_days         INTEGER NOT NULL DEFAULT 0
+  reversal_policy   TEXT NOT NULL            -- FULL_ON_REFUND | PRORATED | NONE_AFTER_HOLD
+  effective_from    INTEGER NOT NULL
+  effective_to      INTEGER
+  created_by        TEXT NOT NULL REFERENCES internal_users(id)
+  created_at        INTEGER NOT NULL
+  CHECK ((calc_type='PERCENTAGE' AND rate_bps IS NOT NULL) OR (calc_type='FIXED' AND fixed_amount IS NOT NULL))
+
+commission_ledger_entries
+  id                TEXT PK
+  sales_user_id     TEXT NOT NULL REFERENCES internal_users(id)
+  business_id       TEXT NOT NULL REFERENCES businesses(id)
+  payment_id        TEXT REFERENCES platform_payments(id)    -- null only for MANUAL_ADJUSTMENT
+  attribution_id    TEXT REFERENCES sales_attributions(id)
+  rule_id           TEXT REFERENCES commission_rules(id)     -- null only for MANUAL_ADJUSTMENT
+  entry_type        TEXT NOT NULL            -- EARNED | REVERSAL | MANUAL_ADJUSTMENT
+  reverses_entry_id TEXT REFERENCES commission_ledger_entries(id)
+  product_code      TEXT NOT NULL            -- snapshot
+  plan_id           TEXT                     -- snapshot
+  basis_amount      INTEGER NOT NULL         -- snapshot
+  calc_type         TEXT                     -- snapshot
+  rate_bps          INTEGER                  -- snapshot
+  fixed_amount      INTEGER                  -- snapshot
+  share_bps         INTEGER NOT NULL         -- snapshot
+  amount            INTEGER NOT NULL         -- signed
+  currency          TEXT NOT NULL
+  payable_after     INTEGER NOT NULL
+  reason            TEXT                     -- required for MANUAL_ADJUSTMENT
+  created_by        TEXT REFERENCES internal_users(id)       -- null = system
+  created_at        INTEGER NOT NULL
+  UNIQUE (payment_id, sales_user_id, entry_type)
+  INDEX (sales_user_id, created_at), INDEX (business_id)
+
+commission_payouts
+  id                TEXT PK
+  sales_user_id     TEXT NOT NULL REFERENCES internal_users(id)
+  total_amount      INTEGER NOT NULL
+  currency          TEXT NOT NULL
+  status            TEXT NOT NULL            -- DRAFT | APPROVED | PAID | VOID
+  approved_by       TEXT REFERENCES internal_users(id)
+  approved_at       INTEGER
+  paid_at           INTEGER
+  payment_reference TEXT
+  created_by        TEXT NOT NULL REFERENCES internal_users(id)
+  created_at        INTEGER NOT NULL
+  INDEX (sales_user_id)
+  CHECK (approved_by IS NULL OR approved_by <> sales_user_id)
+
+commission_payout_items
+  payout_id         TEXT NOT NULL REFERENCES commission_payouts(id)
+  ledger_entry_id   TEXT NOT NULL UNIQUE REFERENCES commission_ledger_entries(id)
+  PRIMARY KEY (payout_id, ledger_entry_id)
+```
+
+### A8. Security additions
+
+- Realm separation enforced by separate tables, session types, and middleware, with cross-realm tests.
+- MFA mandatory for all internal accounts.
+- Cloudflare Access policies for `apps/admin` cover every internal role, including Sales, and remain additive to application authorization (§35a).
+- Sales users have no access path to Operational D1 or tenant files; CRM data they see is limited to their own attributed leads/clients.
+- Manually recorded platform payments create commission, so recording is a separate permission, audited, and the recorder should not be the rep attributed to that business (enforced where practical).
+- Provider payment webhooks (Phase 13) must be signature-verified before a payment can become SUCCEEDED.
+- Payee bank/tax details are not stored in V1; payouts keep only an external `payment_reference`. If stored later, they are sensitive data (§36).
+- All changes to internal users, roles, grants, leads, attributions, platform payments, commission rules, manual adjustments, and payouts are written to `audit_logs` with `actor_type = INTERNAL_USER`.
 
 ## 36. Security Requirements (pre-production)
 
 Secure authentication, secure sessions, role authorization, tenant isolation, cross-tenant security tests, file authorization, rate limiting, upload validation, sensitive document handling, audit logging, data deletion, retention policies, account suspension, account recovery, basic abuse prevention.
 
 Car Rental OS may store driver's licenses and IDs — these require especially careful access controls.
+
+**[Amendment A]** Also required: customer/internal realm separation with cross-realm tests, internal MFA, append-only commission ledger protected at the database level, separation of duties for payouts, audited and permission-gated manual platform payments, and no internal Sales access path to tenant operational data. See §35c A8.
 
 ## 37. Backup & Recovery
 
@@ -652,9 +981,10 @@ Develop in small, reviewable slices, each with: exact scope, explicit exclusions
 | Phase | Focus |
 |---|---|
 | 0 | Architecture Lock — **CURRENT / COMPLETE** |
-| 1 | Platform Skeleton (monorepo, apps, Cloudflare envs, Worker API skeleton, control/operational D1, migration + testing infra, deployment foundation — no Nail/Car Rental workflows) |
-| 2 | Authentication & Tenancy (accounts, login, sessions, businesses, memberships, roles, tenant context, authorization middleware, cross-tenant tests) |
-| 3 | Product & Subscription Foundation (products, plans, subscriptions, states, product assignment, entitlements, overrides, feature guards, expiration/read-only behavior) |
+| 1 | Platform Skeleton (monorepo, apps, Cloudflare envs, Worker API skeleton, control/operational D1, migration + testing infra, deployment foundation — no Nail/Car Rental workflows). **[Amendment A]** includes internal identity tables and the internal RBAC/permissions schema foundation |
+| 2 | Authentication & Tenancy (accounts, login, sessions, businesses, memberships, roles, tenant context, authorization middleware, cross-tenant tests). **[Amendment A]** includes internal authentication, internal sessions, mandatory internal MFA, and realm-separation enforcement |
+| 3 | Product & Subscription Foundation (products, plans, subscriptions, states, product assignment, entitlements, overrides, feature guards, expiration/read-only behavior). **[Amendment A]** includes product management and product grants, sales attribution and lead foundation, and platform payment foundation (manual recording) |
+| 3A | **[Amendment A] Sales & Commissions** — commission rules, ledger processing, reversals/adjustments, payouts, Sales dashboard/CRM UI, commission reporting. Scheduled any time after Phase 3 is complete; never folded into Phase 1 |
 | 4 | Workspace Foundation (app shell, nav, branding, settings, dark mode, modals/toasts/loaders, empty states, unsaved-change protection) |
 | 5 | Files & Storage (R2, uploads, quotas, metadata, categories, secure downloads, image optimization, usage, admin controls, audit history) |
 | 6 | Shared Customer Identity (identity, contact info, notes, tags, timeline foundation, file relationships, product extension mechanism — no generic CRM) |
@@ -702,6 +1032,11 @@ Visual page builder, Bubble/Retool clone, arbitrary workflows, scripting languag
 - [x] Migration infrastructure required
 - [x] Staging required
 - [x] Security requirements defined
+- [x] [Amendment A] Separate internal account realm with data-driven RBAC
+- [x] [Amendment A] Product management through explicit product grants
+- [x] [Amendment A] Platform-level sales attribution and OWN-scoped sales CRM
+- [x] [Amendment A] Altreia CRM data separated from tenant operational data
+- [x] [Amendment A] Commissions from payments to Altreia only, with append-only ledger and payouts
 
 ## 47. Remaining Items Before Phase 1 Implementation
 
@@ -711,6 +1046,7 @@ The high-level architecture is locked. Before Phase 1 implementation begins, the
 2. ~~Exact Cloudflare resources~~ — **RESOLVED / LOCKED** (see §35a, new)
 3. ~~Exact database table schemas for Phase 1~~ — **RESOLVED / LOCKED** (see §35b, new)
 4. ~~Migration naming/versioning convention~~ — **RESOLVED / LOCKED** (see §38a, new)
+   - **Phase 0 Amendment A** (internal accounts, product management, sales attribution, commissions) — **RESOLVED / LOCKED** after Item #5 (see §35c)
 5. ~~Development/staging/production configuration~~ — **RESOLVED / LOCKED** (see §39a, new)
 6. API response/error conventions
 7. Logging conventions
