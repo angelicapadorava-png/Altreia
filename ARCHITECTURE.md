@@ -235,51 +235,77 @@ Configuration split:
 - **Database:** display names, icons, terminology, navigation visibility, default branding, plan mappings, entitlement definitions.
 - **Code:** conflict detection, availability logic, pricing rules, profitability calculations, vehicle workflows, inspection logic, domain transitions, specialized reports. Business logic stays typed, tested, and version-controlled.
 
-## 35. Repository Direction
+## 35. Repository Direction — LOCKED (§47 Item #1)
 
-Recommended monorepo:
+**Scope note:** this locks the repository structure for **Altreia Cloud** — the Cloudflare-hosted, multi-tenant SaaS platform (Altreia Admin + Altreia Platform App + product modules). It does not apply to, and does not change, any Google Sheets / Apps Script one-time systems, which remain separate, standalone deliverables outside this monorepo.
+
+One Altreia monorepo. No independent application or repository per product.
 
 ```
 altreia/
 ├── apps/
-│   ├── platform/
-│   └── admin/
-├── platform/
-│   ├── auth/
-│   ├── businesses/
+│   ├── admin/                    # Altreia Admin — internal control center
+│   └── app/                      # Altreia Platform App — product-aware customer app
+│
+├── platform/                     # Shared platform infrastructure (genuinely platform-owned)
+│   ├── database/                 # control + operational DB clients, tenant-aware data-access layer
+│   ├── auth/                     # authentication, sessions
+│   ├── tenancy/                  # business context, tenant isolation enforcement
+│   ├── ui/                       # design system / shared UI components
 │   ├── branding/
-│   ├── billing/
+│   ├── files/                    # upload/storage infra (R2), file metadata, categories
 │   ├── entitlements/
 │   ├── permissions/
-│   ├── files/
-│   ├── storage/
+│   ├── billing/                  # products, plans, subscriptions
 │   ├── audit/
-│   └── ui/
-├── products/
-│   ├── nail/
+│   └── utils/                    # shared utilities (money, dates, formatting, validation)
+│
+├── products/                     # Isolated product modules — one per OS
+│   ├── nail-tech-os/
 │   │   ├── domain/
 │   │   ├── data/
 │   │   ├── ui/
 │   │   └── tests/
-│   └── car-rental/
+│   ├── car-rental-os/
+│   │   ├── domain/
+│   │   ├── data/
+│   │   ├── ui/
+│   │   └── tests/
+│   └── resortflow/                # future product, same shape, added when built
 │       ├── domain/
 │       ├── data/
 │       ├── ui/
 │       └── tests/
+│
+├── connected/                     # Connected Services modules — separate from Base product logic
+│   ├── email/
+│   ├── payments/
+│   ├── booking/                   # public booking/reservation + automation infra
+│   └── calendar-sync/
+│
 ├── workers/
 │   ├── api/
 │   └── jobs/
+│
 ├── database/
 │   ├── control/
 │   │   └── migrations/
 │   └── operational/
 │       └── migrations/
+│
 └── tests/
     ├── integration/
     └── security/
 ```
 
-Exact folder names may change during setup, but the boundary between platform / products / admin must remain.
+**Binding rules locked with this structure:**
+
+- Product-specific business logic stays inside its `products/<product>/` module. It is only extracted into `platform/` after genuine repetition across two or more products proves the abstraction (per the Phase 0 principle — see below).
+- `connected/*` modules implement Connected Services only. A `products/*` module may call into `connected/*` through an entitlement-gated interface, but must remain fully functional with any `connected/*` module absent or disabled (Base OS never depends on Connected Services — §11).
+- No product gets its own app, repo, or deployment. All products are mounted into `apps/app/` via the product router (§5), each as an isolated module under `products/`.
+- Exact file/folder names inside each module may evolve during setup, but the top-level boundaries (`apps/` vs `platform/` vs `products/` vs `connected/`) are locked and must remain.
+
+Preserves the Phase 0 principle: *"Share infrastructure aggressively. Share logic only after repetition."*
 
 ## 36. Security Requirements (pre-production)
 
@@ -371,7 +397,7 @@ Visual page builder, Bubble/Retool clone, arbitrary workflows, scripting languag
 
 The high-level architecture is locked. Before Phase 1 implementation begins, the next specification must define:
 
-1. Exact Phase 1 repository structure
+1. ~~Exact Phase 1 repository structure~~ — **RESOLVED / LOCKED** (see §35, updated)
 2. Exact Cloudflare resources
 3. Exact database table schemas for Phase 1
 4. Migration naming/versioning convention
