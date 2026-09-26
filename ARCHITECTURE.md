@@ -346,6 +346,185 @@ Preserves the Phase 0 principle: *"Share infrastructure aggressively. Share logi
 - Base product functionality must remain operational even if Queues, Cron jobs, email, payment integrations, or other Connected Services are unavailable or unreachable.
 - Connected Services (anything routed through `connected/*` modules, Queues, Cron-driven jobs, third-party integrations) must never become a runtime dependency for Base functionality — consistent with §11 and §9.
 
+## 35b. Phase 1 Database Schema — LOCKED (§47 Item #3)
+
+**Scope note:** Altreia Cloud only. Phase 1 provisions Control D1 fully and provisions/migrates Operational D1 with only tenancy scaffolding — no Nail Tech OS, Car Rental OS, or ResortFlow domain tables. Those arrive with their respective product phases (7, 8, future).
+
+**Conventions**
+- All application-generated primary IDs are **ULIDs stored as TEXT**. ULIDs are chosen for sortability and distributed-friendly generation, not for secrecy — tenant isolation is enforced by server-side authorization and `business_id` scoping, never by IDs being hard to guess.
+- All timestamps are **Unix epoch INTEGER** (seconds).
+- Every tenant-owned table carries `business_id` and is only ever accessed through the tenant-aware data-access layer (§15–16).
+
+### Control D1
+
+```sql
+users
+  id                    TEXT PK                 -- ULID
+  email                 TEXT NOT NULL UNIQUE
+  password_hash         TEXT
+  created_at            INTEGER NOT NULL
+  updated_at            INTEGER NOT NULL
+
+businesses
+  id                    TEXT PK                 -- ULID
+  name                  TEXT NOT NULL            -- canonical business name (see business_profiles note)
+  product_code          TEXT NOT NULL REFERENCES products(code)
+  status                TEXT NOT NULL            -- ACTIVE | SUSPENDED | ... (platform/admin state — independent of billing)
+  created_at            INTEGER NOT NULL
+  updated_at            INTEGER NOT NULL
+  CHECK (status IN ('ACTIVE','SUSPENDED','CLOSED'))
+
+-- No owner_user_id column. Ownership is derived from business_members
+-- (role = 'OWNER'), not duplicated on businesses. This allows ownership
+-- transfer and, later, multiple owners without redesigning this table.
+
+business_members
+  id                    TEXT PK                 -- ULID
+  business_id           TEXT NOT NULL REFERENCES businesses(id)
+  user_id               TEXT NOT NULL REFERENCES users(id)
+  role                  TEXT NOT NULL            -- OWNER | STAFF | ...
+  created_at            INTEGER NOT NULL
+  UNIQUE (business_id, user_id)
+  INDEX idx_business_members_business (business_id)
+  INDEX idx_business_members_user (user_id)
+-- Authoritative business <-> user relationship. A business must have
+-- at least one member with role = 'OWNER' (enforced in application
+-- logic at write time in Phase 2+; not expressible as a single CHECK
+-- across rows in SQLite).
+
+business_profiles
+  business_id           TEXT PK REFERENCES businesses(id)
+  display_name          TEXT                     -- optional override for public-facing display; falls back to businesses.name if null
+  email                 TEXT
+  phone                 TEXT
+  address_line_1        TEXT
+  address_line_2        TEXT
+  city                  TEXT
+  region                TEXT
+  postal_code           TEXT
+  country_code          TEXT
+  updated_at            INTEGER NOT NULL
+
+business_branding
+  business_id           TEXT PK REFERENCES businesses(id)
+  logo_file_id          TEXT
+  tagline               TEXT
+  primary_color         TEXT
+  accent_color          TEXT
+  theme_preference      TEXT                     -- LIGHT | DARK | SYSTEM
+  updated_at            INTEGER NOT NULL
+
+products
+  code                  TEXT PK                  -- 'nail_tech_os', 'car_rental_os', 'resortflow'
+  name                  TEXT NOT NULL
+  is_published          INTEGER NOT NULL DEFAULT 0
+
+plans
+  id                    TEXT PK                  -- ULID
+  product_code          TEXT NOT NULL REFERENCES products(code)
+  name                  TEXT NOT NULL
+  is_active             INTEGER NOT NULL DEFAULT 1
+  created_at            INTEGER NOT NULL
+  updated_at            INTEGER NOT NULL
+  INDEX idx_plans_product (product_code)
+-- Plans define product capability/tier only. No pricing fields here.
+
+plan_prices
+  id                    TEXT PK                  -- ULID
+  plan_id               TEXT NOT NULL REFERENCES plans(id)
+  billing_type          TEXT NOT NULL            -- MONTHLY | YEARLY | LIFETIME | FOUNDING | ...
+  amount                INTEGER NOT NULL         -- minor units (centavos)
+  currency              TEXT NOT NULL DEFAULT 'PHP'
+  introductory_amount   INTEGER
+  introductory_periods  INTEGER
+  is_active             INTEGER NOT NULL DEFAULT 1
+  created_at            INTEGER NOT NULL
+  updated_at            INTEGER NOT NULL
+  INDEX idx_plan_prices_plan (plan_id)
+-- Billing/pricing is fully decoupled from plan capability. New billing
+-- models (monthly, yearly, lifetime, founding, introductory) are added
+-- as rows here without altering `plans`.
+
+subscriptions
+  id                    TEXT PK                  -- ULID
+  business_id           TEXT NOT NULL REFERENCES businesses(id)
+  plan_id               TEXT NOT NULL REFERENCES plans(id)
+  plan_price_id         TEXT NOT NULL REFERENCES plan_prices(id)
+  status                TEXT NOT NULL            -- TRIAL|ACTIVE|PAST_DUE|EXPIRED|SUSPENDED|CANCELLED
+  current_period_start  INTEGER NOT NULL
+  current_period_end    INTEGER NOT NULL
+  created_at            INTEGER NOT NULL
+  updated_at            INTEGER NOT NULL
+  INDEX idx_subscriptions_business (business_id)
+  CHECK (status IN ('TRIAL','ACTIVE','PAST_DUE','EXPIRED','SUSPENDED','CANCELLED'))
+-- subscriptions.status is billing/subscription state, independent of
+-- businesses.status (platform/admin state). An ACTIVE subscription
+-- does not prevent Admin from independently suspending a business,
+-- and a SUSPENDED business does not require touching billing state.
+
+subscription_periods
+  id                    TEXT PK                  -- ULID
+  subscription_id       TEXT NOT NULL REFERENCES subscriptions(id)
+  period_start          INTEGER NOT NULL
+  period_end            INTEGER NOT NULL
+  amount_paid           INTEGER
+  created_at            INTEGER NOT NULL
+  INDEX idx_subscription_periods_subscription (subscription_id)
+
+plan_entitlements
+  id                    TEXT PK                  -- ULID
+  plan_id               TEXT NOT NULL REFERENCES plans(id)
+  feature_key           TEXT NOT NULL            -- 'booking.public', 'email.transactional', ...
+  UNIQUE (plan_id, feature_key)
+  INDEX idx_plan_entitlements_plan (plan_id)
+
+entitlement_overrides
+  id                    TEXT PK                  -- ULID
+  business_id           TEXT NOT NULL REFERENCES businesses(id)
+  feature_key           TEXT NOT NULL
+  granted               INTEGER NOT NULL         -- 0/1
+  reason                TEXT
+  expires_at            INTEGER
+  created_by            TEXT NOT NULL REFERENCES users(id)
+  created_at            INTEGER NOT NULL
+  INDEX idx_entitlement_overrides_business (business_id)
+
+storage_usage
+  business_id           TEXT PK REFERENCES businesses(id)
+  quota_bytes           INTEGER NOT NULL DEFAULT 524288000   -- 500MB default, admin-configurable
+  used_bytes            INTEGER NOT NULL DEFAULT 0
+  updated_at            INTEGER NOT NULL
+
+audit_logs
+  id                    TEXT PK                  -- ULID
+  business_id           TEXT REFERENCES businesses(id)   -- nullable for platform-level events
+  actor_user_id         TEXT REFERENCES users(id)
+  action                TEXT NOT NULL
+  target_type           TEXT
+  target_id             TEXT
+  metadata              TEXT                     -- JSON
+  created_at            INTEGER NOT NULL
+  INDEX idx_audit_logs_business (business_id)
+  INDEX idx_audit_logs_actor (actor_user_id)
+```
+
+**Canonical naming, defined:**
+- `businesses.name` is the canonical business name (system of record, used in control-plane logic, billing, admin listings).
+- `business_profiles.display_name` is optional and display-specific only — used when a business wants a different public-facing name than its canonical `businesses.name`. If null, display falls back to `businesses.name`.
+- `business_branding` holds no name field at all — it is presentation-only (logo, tagline, colors, theme).
+
+### Operational D1 (Phase 1 scaffolding only)
+
+```sql
+schema_migrations
+  version               TEXT PK
+  applied_at            INTEGER NOT NULL
+```
+
+No product domain tables. Phase 1 deliverables here are the provisioned/migrated database and the tenant-aware access layer (`tenantData.forBusiness(business_id)`) plus its cross-tenant access test suite — not product schemas, which belong to Phases 6–8.
+
+**Concept boundary (reaffirmed):** `plan_entitlements`/`entitlement_overrides` (access), `plans`/`plan_prices` (billing), and `business_members.role` + a future `permissions` layer (what a member can do) are three distinct systems and are not collapsed, per §12.
+
 ## 36. Security Requirements (pre-production)
 
 Secure authentication, secure sessions, role authorization, tenant isolation, cross-tenant security tests, file authorization, rate limiting, upload validation, sensitive document handling, audit logging, data deletion, retention policies, account suspension, account recovery, basic abuse prevention.
@@ -438,7 +617,7 @@ The high-level architecture is locked. Before Phase 1 implementation begins, the
 
 1. ~~Exact Phase 1 repository structure~~ — **RESOLVED / LOCKED** (see §35, updated)
 2. ~~Exact Cloudflare resources~~ — **RESOLVED / LOCKED** (see §35a, new)
-3. Exact database table schemas for Phase 1
+3. ~~Exact database table schemas for Phase 1~~ — **RESOLVED / LOCKED** (see §35b, new)
 4. Migration naming/versioning convention
 5. Development/staging/production configuration
 6. API response/error conventions
