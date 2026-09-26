@@ -307,6 +307,45 @@ altreia/
 
 Preserves the Phase 0 principle: *"Share infrastructure aggressively. Share logic only after repetition."*
 
+## 35a. Cloudflare Resources — LOCKED (§47 Item #2)
+
+**Scope note:** this locks the Cloudflare resource architecture for **Altreia Cloud** only, not the Google Sheets / Apps Script one-time systems.
+
+**Frontend deployments — two separate surfaces**
+- **Altreia Admin** (`apps/admin`) — its own Cloudflare Pages/Workers deployment.
+- **Altreia Customer App** (`apps/app`) — its own Cloudflare Pages/Workers deployment.
+- Both are separate deployment surfaces but consume the same shared backend/API architecture (`workers/api`). Two deployments, one API.
+
+**Data**
+- **Control D1** — one database for platform/control-plane data: users, businesses, memberships, subscriptions, entitlements, platform configuration, audit information (§17).
+- **Shared Operational D1** — one database for V1 tenant/product operational data across all products. No per-product operational databases in V1.
+  - Every operational record is tenant-scoped via `business_id`.
+  - All access is enforced server-side through the tenant-aware data-access layer (§15–16) — no route handler queries the operational D1 directly.
+  - The data-access layer is the seam that allows operational storage to later be split or sharded (per product, per large customer, etc.) without redesigning the control plane.
+- **R2** — one shared private bucket, `businesses/{business_id}/...` layout (§21), no per-business buckets in V1.
+
+**Admin protection — both layers required**
+- **Cloudflare Access / Zero Trust** in front of `apps/admin`, as an additional network-level boundary.
+- **Application-level authentication and authorization** inside `apps/admin`, independent of Access.
+- Cloudflare Access is additive, not a substitute: application permissions (roles, entitlements) are enforced regardless of whether Access is reachable, misconfigured, or bypassed at the edge.
+
+**Compute, jobs, and supporting resources**
+- **API Worker** (`workers/api`) — the single backend API, shared by both frontend deployments.
+- **Background/Jobs Worker** (`workers/jobs`) — scheduled and async work (Connected Services automation, reminders, cleanup).
+- **Cloudflare Queues** — decouples `workers/api` from `workers/jobs` for async work (email, webhooks, reminders, file post-processing).
+- **Cron Triggers** — drives scheduled Connected Services jobs.
+- **Turnstile** — bot/abuse protection where appropriate (public booking forms, login, other public-facing endpoints).
+- **Wrangler/environment secrets** — no secrets or production credentials in source (§39).
+- **Isolated development / staging / production resources** — separate D1, R2, KV, Queues, and Worker environments per environment tier (§39).
+
+**KV — deferred, not locked**
+- KV is **not** locked as the session-token/auth-persistence store. Where and how authentication sessions are persisted is deferred to the authentication implementation architecture (§14, to be specified with Phase 2).
+- KV **may** be used now for appropriate low-latency cache/config/rate-limiting use cases where eventual consistency is acceptable (e.g. entitlement cache, rate-limit counters, config lookups) — just not as the source of truth for sessions.
+
+**Base vs. Connected dependency rule (reaffirmed at the infrastructure level)**
+- Base product functionality must remain operational even if Queues, Cron jobs, email, payment integrations, or other Connected Services are unavailable or unreachable.
+- Connected Services (anything routed through `connected/*` modules, Queues, Cron-driven jobs, third-party integrations) must never become a runtime dependency for Base functionality — consistent with §11 and §9.
+
 ## 36. Security Requirements (pre-production)
 
 Secure authentication, secure sessions, role authorization, tenant isolation, cross-tenant security tests, file authorization, rate limiting, upload validation, sensitive document handling, audit logging, data deletion, retention policies, account suspension, account recovery, basic abuse prevention.
@@ -398,7 +437,7 @@ Visual page builder, Bubble/Retool clone, arbitrary workflows, scripting languag
 The high-level architecture is locked. Before Phase 1 implementation begins, the next specification must define:
 
 1. ~~Exact Phase 1 repository structure~~ — **RESOLVED / LOCKED** (see §35, updated)
-2. Exact Cloudflare resources
+2. ~~Exact Cloudflare resources~~ — **RESOLVED / LOCKED** (see §35a, new)
 3. Exact database table schemas for Phase 1
 4. Migration naming/versioning convention
 5. Development/staging/production configuration
