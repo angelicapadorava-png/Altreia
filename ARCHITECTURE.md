@@ -598,6 +598,7 @@ No product domain tables. Phase 1 deliverables here are the provisioned/migrated
 | `sales.crm.own` (leads, clients, notes) | OWN | | | ✓ |
 | `commissions.ledger.read.own`, `payouts.read.own` | OWN | | | ✓ |
 | `audit.read` | GLOBAL / PRODUCT | ✓ | ✓ (granted products) | |
+| `platform.logs.read.production` (added by §35e) | GLOBAL | ✓ | | never |
 
 - **PRODUCT_ADMIN does not automatically receive financial or sales-management authority**: recording platform payments, managing sales attribution, managing commission rules, and managing/approving payouts are separate permissions held by SUPER_ADMIN by default. An individual PRODUCT_ADMIN may be explicitly granted any of them later. PRODUCT_ADMIN is never equivalent to SUPER_ADMIN.
 
@@ -937,6 +938,96 @@ commission_payout_items
 - **Idempotency does not rely only on HTTP headers.** Queued/background jobs and provider-webhook processing use stable operation/event identifiers plus deduplication. No queue, Worker, webhook, network, or user retry may charge twice, record the same payment twice, generate or pay commission twice, send the same transactional action twice, or repeat any other protected external side effect.
 - The database-level protections already locked remain: unique `platform_payments.provider_ref` and unique `(payment_id, sales_user_id, entry_type)` on commission ledger entries (§35c A7).
 
+## 35e. Logging Conventions — LOCKED (§47 Item #7)
+
+**Scope note:** Altreia Cloud only.
+
+**Two separate systems**
+- **Operational logs** serve engineering: debugging, errors, performance, tracing. Short-lived.
+- **`audit_logs`** (§35b) record who did what for security and business accountability. Permanent, stored in the database, never sampled.
+- Neither substitutes for the other.
+
+**Destination**
+- V1 uses **Cloudflare Workers Logs only**. No Logpush destination or external logging provider yet.
+- The logging design stays provider-neutral so Logpush or external observability can be added later without rewriting application logging.
+
+**Format and logger**
+- One structured JSON object per log entry.
+- All logging goes through the shared platform logger in `platform/`. No scattered `console.log` in committed code.
+
+**Standard fields**
+```json
+{
+  "ts": 1790000000123,
+  "level": "info",
+  "env": "production",
+  "service": "api",
+  "request_id": "01J...",
+  "realm": "customer",
+  "actor_id": "01J...",
+  "business_id": "01J...",
+  "product_code": "nail_tech_os",
+  "route": "POST /v1/appointments",
+  "event": "appointment.created",
+  "status": 201,
+  "duration_ms": 42,
+  "error_code": null
+}
+```
+- `service`: `api | jobs | admin | app`. `realm`: `customer | internal | system`.
+- `event` is a stable dot-separated name. Dashboards and alerts key on `event` and `error_code`, never on free text.
+- Request/operation IDs propagate into logs (§35d). Background jobs also log `job`, `attempt`, and `idempotency_key`.
+
+**Levels**
+
+| Level | Use | Enabled in |
+|---|---|---|
+| `debug` | Detailed troubleshooting | Local and DEV only |
+| `info` | Normal meaningful events | Hosted environments |
+| `warn` | Recoverable problems (retry, slow dependency, rejected login) | All |
+| `error` | Failed operations needing attention | All |
+
+**Sampling**
+- V1 keeps **100%** of request summary logs. No routine production sampling.
+- If traffic, retention, or cost later justify it, routine successful requests may be sampled.
+- The following are **never** intentionally sampled away: errors, warnings, security-relevant events, authentication failures, wrong-realm attempts, permission denials, failed/dead-letter jobs, Connected Services failures, startup/configuration failures, and operationally relevant duplicate/idempotency protection events.
+- Audit logs are never sampled.
+
+**Redaction and privacy**
+- Never logged in any environment: passwords, password hashes, MFA codes, session IDs, cookies, authorization headers, tokens, API keys, secrets, complete login request bodies, full request/response bodies, payment card or bank data, government ID or driver's license numbers, uploaded file contents.
+- Customer operational data and Sales CRM contact information are never logged.
+- Raw email addresses, phone numbers, and other personal identifiers are avoided when an internal ID or minimized metadata is enough.
+- Authentication and security logs record the minimum useful diagnostic information.
+- The shared logger strips known sensitive fields (deny-list) as a safety net; bodies are never logged whole, only selected fields.
+- Error logs may include stack traces internally, after redaction.
+
+**Always logged**
+- A request summary line (route, status, duration, IDs, `error_code`).
+- Every 5xx, with stack trace.
+- Authentication events: success, failure, MFA failure, wrong-realm attempts.
+- Permission denials and scope rejections.
+- Job attempts, retries, and idempotency duplicate catches.
+- Dependency failures (payments, email, Connected Services).
+- Startup binding/secret validation failures.
+
+**Denials vs. information hiding**
+- Security-relevant denials are logged internally without weakening the API's information-hiding rules (§35d). A request for another tenant's record still returns 404 to the caller, while the internal log records that tenant authorization rejected it.
+
+**Log failure behavior**
+- Operational logging is never a hard dependency of Base product functionality. If routine log delivery is temporarily unavailable, business operations do not fail because of it.
+- Audit events are different: operations defined as requiring an audit record keep that requirement under the audit architecture.
+
+**Access**
+- Raw production log access requires the explicit permission `platform.logs.read.production`, not a role-name check.
+- SUPER_ADMIN holds it by default. No other internal role does by default; it can be granted to an authorized technical administrator later without changing the authorization design.
+- Sales users never receive it. Product Admin users do not receive it by default.
+
+**Alerts**
+- V1 sends operator **email** alerts.
+- Alert definitions are independent of delivery, so another destination (e.g. Slack) can be added later without changing them.
+- Initial alert set: 5xx rate spike, dead-letter jobs, Worker startup validation failures, suspicious spikes in authentication failures or wrong-realm attempts.
+- Log retention follows the Workers Logs default for V1.
+
 ## 36. Security Requirements (pre-production)
 
 Secure authentication, secure sessions, role authorization, tenant isolation, cross-tenant security tests, file authorization, rate limiting, upload validation, sensitive document handling, audit logging, data deletion, retention policies, account suspension, account recovery, basic abuse prevention.
@@ -1131,7 +1222,7 @@ The high-level architecture is locked. Before Phase 1 implementation begins, the
    - **Phase 0 Amendment A** (internal accounts, product management, sales attribution, commissions) — **RESOLVED / LOCKED** after Item #5 (see §35c)
 5. ~~Development/staging/production configuration~~ — **RESOLVED / LOCKED** (see §39a, new)
 6. ~~API response/error conventions~~ — **RESOLVED / LOCKED** (see §35d, new)
-7. Logging conventions
+7. ~~Logging conventions~~ — **RESOLVED / LOCKED** (see §35e, new)
 8. Testing stack
 9. Coding standards
 10. Phase 1 acceptance criteria
