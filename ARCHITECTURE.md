@@ -102,6 +102,8 @@ Base OS pricing direction (configurable, never hardcoded):
 
 The database must support promotional pricing, grandfathered pricing, per-product pricing, different renewal prices, and monthly/yearly Connected Services pricing.
 
+**[Amendment B]** Products may use the standard tier vocabulary ESSENTIAL, PROFESSIONAL, BUSINESS, with ENTERPRISE reserved as an optional custom tier. See §35f.
+
 ## 9. Base OS vs Connected Services
 
 Two commercial layers:
@@ -269,6 +271,7 @@ altreia/
 │   ├── internal-auth/            # [Amendment A] internal accounts, internal RBAC, product grants
 │   ├── sales/                    # [Amendment A] Altreia sales CRM + attribution
 │   ├── commissions/              # [Amendment A] rules, ledger, payouts
+│   ├── exports/                  # [Amendment B] Export Center; products register exportable datasets
 │   └── utils/                    # shared utilities (money, dates, formatting, validation)
 │
 ├── products/                     # Isolated product modules — one per OS
@@ -439,10 +442,14 @@ plans
   id                    TEXT PK                  -- ULID
   product_code          TEXT NOT NULL REFERENCES products(code)
   name                  TEXT NOT NULL
+  tier_code             TEXT                     -- [Amendment B] ESSENTIAL | PROFESSIONAL | BUSINESS | ENTERPRISE, or null for a product-specific plan
   is_active             INTEGER NOT NULL DEFAULT 1
   created_at            INTEGER NOT NULL
   updated_at            INTEGER NOT NULL
   INDEX idx_plans_product (product_code)
+  CHECK (tier_code IS NULL OR tier_code IN ('ESSENTIAL','PROFESSIONAL','BUSINESS','ENTERPRISE'))
+-- [Amendment B] tier_code is a presentation/default convention only.
+-- Code never authorizes by tier_code or plan name; it checks entitlements.
 -- Plans define product capability/tier only. No pricing fields here.
 
 plan_prices
@@ -1028,11 +1035,67 @@ commission_payout_items
 - Initial alert set: 5xx rate spike, dead-letter jobs, Worker startup validation failures, suspicious spikes in authentication failures or wrong-realm attempts.
 - Log retention follows the Workers Logs default for V1.
 
+## 35f. Phase 0 Amendment B — Standard Product Tiers & Data Export — LOCKED
+
+**Scope note:** Altreia Cloud only. Explicit Phase 0 amendment approved after §47 Item #7. Affected locked sections carry an `[Amendment B]` marker.
+
+### B1. Standard tier vocabulary
+
+| Tier | Meaning |
+|---|---|
+| ESSENTIAL | Core product experience |
+| PROFESSIONAL | Advanced product capabilities |
+| BUSINESS | Highest normal self-service tier, eligible for data-export capabilities |
+| ENTERPRISE | Reserved and optional, for future custom needs (larger organizations, custom limits, advanced administration, integrations, support arrangements, negotiated capabilities). No Enterprise-specific functionality is built yet |
+
+- These names are presentation and default conventions, recorded in `plans.tier_code` (§35b). A product may use all, some, or none of them, and may have a different plan structure.
+- Tier and plan remain separate from entitlements (§12). What a plan can do is defined only by its `plan_entitlements`.
+- Code never authorizes by tier or plan name (e.g. never `plan.name == "Business"` or `tier_code == 'BUSINESS'`). It checks entitlements, so plans and pricing can change without rewriting feature logic.
+
+### B2. `data_export` entitlement
+
+- New platform entitlement key: `data_export`. It enables self-service business-data export from supported products.
+- The standard BUSINESS tier is expected to include it through `plan_entitlements`, and it can be granted to any plan or business (including via `entitlement_overrides`) without code changes.
+
+### B3. Export Center (platform capability)
+
+- Lives in `platform/exports/`. Products **register** their exportable datasets; the platform owns selection, generation, storage, download, and audit.
+- Each product decides which of its operational datasets are exportable. Examples for later:
+  - Nail Tech OS: clients, appointments, services, inventory, expenses, revenue
+  - Car Rental OS: fleet, reservations, customers, payments, maintenance, expenses
+- **No product datasets are implemented in Phase 1.** They arrive with each product's phase.
+- Customer flow: open Data Export → choose from available datasets → choose CSV or Excel → generate → download.
+- **Formats:**
+  - CSV: one file per dataset, or a bundle (zip) when several are selected.
+  - Excel `.xlsx`: one workbook with a separate worksheet per selected dataset where appropriate.
+- Large exports are generated asynchronously by the jobs Worker via Queues, so the HTTP request doesn't stay open. Small exports may be generated inline.
+- Export job records live in Control D1 (`export_jobs`: `id`, `business_id`, `requested_by`, `datasets`, `format`, `status`, `r2_key`, `expires_at`, `request_id`, timestamps). The schema is finalized in Phase 6A under §38a migrations.
+- Generated files are temporary and do not count against the business's storage quota.
+
+### B4. Export security
+
+- Exports are tenant-scoped on the server. The export service never trusts a client-supplied `business_id`; it uses only the authenticated tenant context.
+- A business can export only its own data, and only what its member's permissions and its entitlements allow.
+- Files are private R2 objects (under `businesses/{business_id}/exports/…`), never public, and deleted after expiry.
+- Download links/tokens are short-lived and expire.
+- Export generation and download are written to `audit_logs`.
+- Tests must attempt cross-tenant exports and confirm they fail with 404, without revealing whether the other tenant's data exists (§35d).
+- Internal accounts (Sales, Product Admin, and others) do **not** gain any ability to export a customer's Operational D1 data.
+- Export generation is idempotent by job ID, so a retried job doesn't produce duplicate exports or duplicate audit side effects (§35d).
+
+### B5. Data ownership and portability
+
+- The `data_export` entitlement is a **convenience feature**, not the only way a business can get its data.
+- It is separate from any data access or export Altreia must provide for privacy, legal, account-closure, or data-portability reasons. Those obligations apply regardless of tier.
+- A lower tier without self-service export must never be read as Altreia owning or trapping the customer's data. The read-only "export records" right of an expired account (§41) is part of this portability path.
+
 ## 36. Security Requirements (pre-production)
 
 Secure authentication, secure sessions, role authorization, tenant isolation, cross-tenant security tests, file authorization, rate limiting, upload validation, sensitive document handling, audit logging, data deletion, retention policies, account suspension, account recovery, basic abuse prevention.
 
 Car Rental OS may store driver's licenses and IDs — these require especially careful access controls.
+
+**[Amendment B]** Exports are tenant-scoped server-side, stored privately and temporarily, downloaded only through expiring links, audited, and covered by cross-tenant export tests. See §35f.
 
 **[Amendment A]** Also required: customer/internal realm separation with cross-realm tests, internal MFA, append-only commission ledger protected at the database level, separation of duties for payouts, audited and permission-gated manual platform payments, and no internal Sales access path to tenant operational data. See §35c A8.
 
@@ -1141,7 +1204,7 @@ Local Development, Staging (production-like), Production. Secrets and production
 
 Base subscription states: `TRIAL`, `ACTIVE`, `PAST_DUE`, `EXPIRED`, `SUSPENDED`, `CANCELLED`. Not every state needs full billing automation in V1.
 
-**Expired Base:** account becomes read-only. Customer may still log in, view data/documents, download files, export records. Customer may not create records, edit operational data, or perform new transactions. Data is not deleted immediately (formal retention policy defined separately).
+**Expired Base:** account becomes read-only. Customer may still log in, view data/documents, download files, export records. **[Amendment B]** "Export records" here is the data-portability path (§35f), not the premium `data_export` entitlement, and does not depend on tier. Customer may not create records, edit operational data, or perform new transactions. Data is not deleted immediately (formal retention policy defined separately).
 
 **Connected cancellation:** disables only Connected entitlements (`booking.public`, `email.send`, `email.reminders`, `payments.online`, `calendar.sync` → false). Existing Base OS data, appointments/reservations, payment records, and files remain intact.
 
@@ -1161,6 +1224,7 @@ Develop in small, reviewable slices, each with: exact scope, explicit exclusions
 | 4 | Workspace Foundation (app shell, nav, branding, settings, dark mode, modals/toasts/loaders, empty states, unsaved-change protection) |
 | 5 | Files & Storage (R2, uploads, quotas, metadata, categories, secure downloads, image optimization, usage, admin controls, audit history) |
 | 6 | Shared Customer Identity (identity, contact info, notes, tags, timeline foundation, file relationships, product extension mechanism — no generic CRM) |
+| 6A | **[Amendment B] Export Center** — platform export service, dataset registry, CSV/XLSX generation, async jobs, private expiring downloads, cross-tenant export tests. Scheduled after Phase 5 (files/R2). Product datasets are registered in each product's own phase (7, 8, …), not here |
 | 7 | Nail OS V2 Core |
 | 8 | Car Rental OS V2 Core |
 | 9 | Shared Pattern Extraction (only after both products exist; extract only proven reusable patterns) |
@@ -1210,6 +1274,9 @@ Visual page builder, Bubble/Retool clone, arbitrary workflows, scripting languag
 - [x] [Amendment A] Platform-level sales attribution and OWN-scoped sales CRM
 - [x] [Amendment A] Altreia CRM data separated from tenant operational data
 - [x] [Amendment A] Commissions from payments to Altreia only, with append-only ledger and payouts
+- [x] [Amendment B] Standard tier vocabulary as convention, never as authorization
+- [x] [Amendment B] `data_export` entitlement and platform Export Center
+- [x] [Amendment B] Self-service export separated from data-portability obligations
 
 ## 47. Remaining Items Before Phase 1 Implementation
 
@@ -1220,6 +1287,7 @@ The high-level architecture is locked. Before Phase 1 implementation begins, the
 3. ~~Exact database table schemas for Phase 1~~ — **RESOLVED / LOCKED** (see §35b, new)
 4. ~~Migration naming/versioning convention~~ — **RESOLVED / LOCKED** (see §38a, new)
    - **Phase 0 Amendment A** (internal accounts, product management, sales attribution, commissions) — **RESOLVED / LOCKED** after Item #5 (see §35c)
+   - **Phase 0 Amendment B** (standard product tiers, `data_export` entitlement, Export Center) — **RESOLVED / LOCKED** after Item #7 (see §35f)
 5. ~~Development/staging/production configuration~~ — **RESOLVED / LOCKED** (see §39a, new)
 6. ~~API response/error conventions~~ — **RESOLVED / LOCKED** (see §35d, new)
 7. ~~Logging conventions~~ — **RESOLVED / LOCKED** (see §35e, new)
