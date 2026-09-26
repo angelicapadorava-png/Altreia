@@ -583,6 +583,58 @@ database/
 
 Local Development, Staging (production-like), Production. Secrets and production credentials never live in source code.
 
+## 39a. Environment Configuration — LOCKED (§47 Item #5)
+
+**Scope note:** Altreia Cloud only.
+
+**Tiers and flow**
+
+`LOCAL → DEV → STAGING → PRODUCTION`
+
+- **Development tier** has two parts:
+  - **Local** is the primary, fast environment: `wrangler dev` with local D1/R2/KV emulation.
+  - **DEV (hosted)** is a shared Cloudflare deployment for integration testing when local emulation isn't enough. It belongs to the Development tier and is not a formal release environment.
+- **Staging** is the production-like check before release.
+- **Production** serves real customers.
+
+| | Local | DEV (hosted) | Staging | Production |
+|---|---|---|---|---|
+| Data | Synthetic only | Synthetic only | Synthetic only | Real |
+| Cloudflare Access on Admin | Off | Per policy | **On** | **On** |
+| Turnstile | Test keys | Environment keys | Environment keys | Environment keys |
+| Connected Services | Stubbed | Sandboxed/stubbed | Provider sandbox/test modes | Live |
+| Logging | Debug | Structured | Structured | Structured, personal/sensitive data redacted |
+
+**Cloudflare account**
+- V1 uses **one Cloudflare account**.
+- Each hosted environment has its own separate Control D1, Operational D1, R2 bucket, KV namespaces, Queues, Worker deployments, secrets, bindings, and Cloudflare Access policies where they apply. No environment shares an application data resource with another.
+- Resources are named `altreia-<resource>-<env>` (e.g. `altreia-control-staging`, `altreia-files-prod`).
+- **Future hardening:** Production may move to its own Cloudflare account if Altreia's scale, team size, security requirements, or operator access model justify it.
+
+**Configuration and secrets**
+- One Wrangler config per Worker/app, with a block per environment. Resource IDs may live there; they are identifiers, not secrets.
+- Non-secret settings (environment name, log level, public URLs) go in Wrangler `vars`.
+- Secrets are set per environment with `wrangler secret put` and never committed.
+- Local secrets live in `.dev.vars`, which is git-ignored. `.dev.vars.example` is committed with key names and no values.
+- Production secrets are held by the smallest practical group of people.
+
+**Staging and DEV data**
+- Staging and hosted DEV use synthetic/test data only. Real customer or production data is never copied into them.
+- Production-like QA datasets are generated as representative synthetic fixtures.
+- Stripping names/emails from a production copy does **not** count as safe staging data.
+
+**Environment safety guardrails**
+- **No fallback between environments.** If a required binding, secret, database, bucket, queue, provider configuration, or other dependency is missing or invalid, the Worker fails safely and loudly at startup. It never silently uses another environment's resource.
+- This applies in both directions: Production never falls back to DEV/Staging resources, and DEV/Staging can never reach Production bindings through a default or fallback configuration.
+- Every Worker validates its required bindings and secrets at startup.
+- Non-production interfaces, especially Altreia Admin, are clearly marked as **LOCAL**, **DEV**, or **STAGING** so operators always know which environment they are in.
+- Any operation that can affect real customers (sending real email, charging real payments, contacting real people) is only available in Production, with Production authorization.
+
+**Promotion**
+- Approved merges to `main` deploy automatically to Staging.
+- Production deploys only through an explicit release process (details in §47 Item #12).
+- Migrations are promoted dev → staging → production, per §38a.
+
 ## 40–42. Subscription States & Lifecycle
 
 Base subscription states: `TRIAL`, `ACTIVE`, `PAST_DUE`, `EXPIRED`, `SUSPENDED`, `CANCELLED`. Not every state needs full billing automation in V1.
@@ -659,7 +711,7 @@ The high-level architecture is locked. Before Phase 1 implementation begins, the
 2. ~~Exact Cloudflare resources~~ — **RESOLVED / LOCKED** (see §35a, new)
 3. ~~Exact database table schemas for Phase 1~~ — **RESOLVED / LOCKED** (see §35b, new)
 4. ~~Migration naming/versioning convention~~ — **RESOLVED / LOCKED** (see §38a, new)
-5. Development/staging/production configuration
+5. ~~Development/staging/production configuration~~ — **RESOLVED / LOCKED** (see §39a, new)
 6. API response/error conventions
 7. Logging conventions
 8. Testing stack
