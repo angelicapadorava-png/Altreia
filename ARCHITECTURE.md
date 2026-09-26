@@ -1089,6 +1089,109 @@ commission_payout_items
 - It is separate from any data access or export Altreia must provide for privacy, legal, account-closure, or data-portability reasons. Those obligations apply regardless of tier.
 - A lower tier without self-service export must never be read as Altreia owning or trapping the customer's data. The read-only "export records" right of an expired account (§41) is part of this portability path.
 
+## 35g. Testing Stack — LOCKED (§47 Item #8)
+
+**Scope note:** Altreia Cloud only.
+
+**Tools**
+
+| Layer | Tool |
+|---|---|
+| Language | TypeScript, strict mode, whole monorepo |
+| Unit and integration | Vitest with `@cloudflare/vitest-pool-workers` (tests run in the real Workers runtime against local D1, R2, KV, Queues) |
+| Frontend components | Vitest + Testing Library (React, per §35h) |
+| End-to-end | Playwright |
+| Typecheck and lint | `tsc --noEmit`, ESLint |
+| CI | GitHub Actions |
+
+**Test layers**
+1. **Unit** — pure logic: commission math, rule selection, rounding, money, entitlement resolution, subscription state transitions, product domain rules.
+2. **Integration** — local D1 with all migrations applied; the tenant-aware data layer, API routes, queue consumers, webhook handlers.
+3. **Security** (`tests/security/`, mandatory) — cross-tenant read/write (404); wrong-realm sessions (401 `INVALID_SESSION_REALM`); Sales reaching another rep's clients (404); Product Admin reaching ungranted products (404); internal accounts reaching Operational D1 or tenant files; writes on expired subscriptions; PRODUCT_ADMIN attempting financial actions without the permission; self-approval of payouts; self-granting roles; cross-tenant exports (§35f).
+4. **Base-without-Connected** — Base features work with every Connected Service, Queues, and Cron disabled or unreachable (§11).
+5. **Idempotency and ledger** — replays of requests, jobs, and webhooks never double-charge, double-record, or double-earn/pay commission; UPDATE/DELETE on ledger entries and paid payouts is rejected by the database.
+6. **Migration** — both streams apply cleanly from empty; checksum changes and sequence gaps are detected; destructive migrations are marked forward-only (§38a).
+7. **E2E smoke** — login in both realms, product routing, an Admin action, expired read-only banner; against local builds and against staging after deploy.
+8. **Environment guardrails** — Workers refuse to start with missing bindings/secrets; no cross-environment fallback (§39a).
+
+**Test data:** synthetic only, via factories and seeded fixtures (§39a). Each test starts from a clean database with no shared state.
+
+**CI gates**
+- **Every pull request (required to merge):** typecheck, lint, unit, integration, security/tenant isolation, realm separation, authorization, migration validation, financial/idempotency where applicable, Base-without-Connected, critical local E2E smoke.
+- **After staging deploy:** Playwright smoke against staging.
+- **Before production:** staging must be green (release process in §47 Item #12).
+
+**Coverage:** no repository-wide minimum percentage. Coverage is reported for information. The mandatory behavioral and security suites are the real quality gate: any change touching tenancy, realms, permissions, entitlements, money, exports, or idempotency ships with tests in the matching suite.
+
+## 35h. Coding Standards — LOCKED (§47 Item #9)
+
+**Scope note:** Altreia Cloud only.
+
+**Stack**
+- TypeScript in strict mode everywhere. `any` only at an external boundary, with a comment explaining why.
+- pnpm workspaces; each folder under `apps/*`, `platform/*`, `products/*`, `connected/*`, `workers/*` is a package.
+- ESLint + Prettier enforce style.
+- **Frontend:** React + Vite + TypeScript for `apps/admin` and `apps/app`, one shared form approach, Zod for validation.
+- **API:** Hono on Cloudflare Workers.
+- **Database access:** Kysely as the typed query builder.
+
+**Input validation**
+- All untrusted or external input is validated before use: request bodies, query parameters, route parameters where applicable, webhook payloads, queue messages, environment configuration, imported data. Zod is used where appropriate.
+
+**Naming**
+- TypeScript code uses normal conventions: `camelCase` for functions/variables, `PascalCase` for types and components, `kebab-case` for files and folders.
+- The external JSON API stays `snake_case` (§35d). Conversion happens at one defined serialization/deserialization boundary, never scattered through application code.
+- Database tables and columns stay `snake_case`. Error codes are `UPPER_SNAKE`. Permission keys, entitlement keys, and event names follow the dot/snake formats already locked.
+
+**Database access rules**
+- Kysely stays close to SQL and is **not** an authorization boundary.
+- All business and tenant data access goes through the tenant-aware platform data layer. Route handlers, React apps, product UI code, and arbitrary services never open or use D1 directly.
+- Raw SQL is allowed where genuinely needed (migrations, specialized queries, constraints/triggers, things Kysely can't express well), and it obeys the same tenant and security architecture.
+
+**Module boundaries** (enforced by lint/import rules where practical)
+- `products/*` may use `platform/*` and `connected/*` interfaces; never another product.
+- `platform/*` never depends on product implementations.
+- `connected/*` never depends on product implementations.
+- `apps/*` talk to the API only; they never touch D1 or R2 directly.
+- D1 access stays behind the data layer.
+- Customer and internal authentication/authorization modules stay separate.
+
+**Constants vs. hard-coding**
+- Stable machine identifiers may be centralized typed constants: permission codes, entitlement keys, system role codes, tier codes, product codes, error codes, event names.
+- Authorization and feature access never rely on human-facing names or tier assumptions (e.g. never `role.name === "Product Admin"`, `plan.name === "Business"`, or `tier === "BUSINESS"` to grant a feature).
+  - Authorization uses **permissions**.
+  - Feature access uses **entitlements**.
+  - Prices come from plan/pricing configuration.
+  - Tier codes are classification/presentation metadata only.
+- System role codes may be used only where the architecture explicitly needs role identity for role-management invariants (e.g. protecting the last SUPER_ADMIN, §35c). Normal feature authorization stays permission-based.
+- Prices, quotas, and limits are never hard-coded.
+
+**Money, time, IDs, errors, logging, config**
+- Money: integer minor units, explicit currency code, shared `Money` helpers, no floating-point monetary calculation.
+- Time: epoch integers in persistence and the API; the business's time zone for display and business-time calculations.
+- IDs: one shared ULID generator.
+- Errors: typed application errors with registered codes, serialized to the API envelope in one central place.
+- Logging: shared structured logger only; no committed scattered `console.log` (§35e).
+- Config: accessed only through a validated environment object that fails loudly at startup (§39a).
+- Every route declares its requirements (authentication, realm, permission, entitlement, tenant/scope), enforced by shared middleware.
+
+**Code quality**
+- Modules stay reasonably small with explicit responsibilities.
+- No premature shared abstractions. *"Share infrastructure aggressively. Share logic only after repetition."* Product logic stays in the product until genuine repetition justifies extraction; similarity alone is not a reason to generalize.
+- Comments explain non-obvious *why*, not *what*.
+
+**Dependencies**
+- GitHub **Dependabot** for V1 (not also Renovate).
+- New runtime dependencies need a stated reason in the PR.
+- The lockfile is committed. Security-sensitive updates are surfaced through GitHub/Dependabot.
+
+**Git and review**
+- Short-lived branches and pull requests. No direct pushes to `main`.
+- **Conventional Commits are required**: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`, `ci:`, `build:`. Messages stay concise and meaningful, supporting future changelog/release-note automation.
+- Each PR/slice states scope, exclusions, acceptance criteria, tests, security implications, and migration impact (§43).
+- Required automated checks must pass before merge.
+- Security-, money-, tenancy-, authorization-, and migration-sensitive changes get particularly careful review.
+
 ## 36. Security Requirements (pre-production)
 
 Secure authentication, secure sessions, role authorization, tenant isolation, cross-tenant security tests, file authorization, rate limiting, upload validation, sensitive document handling, audit logging, data deletion, retention policies, account suspension, account recovery, basic abuse prevention.
@@ -1291,8 +1394,8 @@ The high-level architecture is locked. Before Phase 1 implementation begins, the
 5. ~~Development/staging/production configuration~~ — **RESOLVED / LOCKED** (see §39a, new)
 6. ~~API response/error conventions~~ — **RESOLVED / LOCKED** (see §35d, new)
 7. ~~Logging conventions~~ — **RESOLVED / LOCKED** (see §35e, new)
-8. Testing stack
-9. Coding standards
+8. ~~Testing stack~~ — **RESOLVED / LOCKED** (see §35g, new)
+9. ~~Coding standards~~ — **RESOLVED / LOCKED** (see §35h, new)
 10. Phase 1 acceptance criteria
 11. Exclusions for Phase 1
 12. Deployment/tagging procedure
