@@ -855,6 +855,88 @@ commission_payout_items
 - Payee bank/tax details are not stored in V1; payouts keep only an external `payment_reference`. If stored later, they are sensitive data (§36).
 - All changes to internal users, roles, grants, leads, attributions, platform payments, commission rules, manual adjustments, and payouts are written to `audit_logs` with `actor_type = INTERNAL_USER`.
 
+## 35d. API Response & Error Conventions — LOCKED (§47 Item #6)
+
+**Scope note:** Altreia Cloud only. Applies to shared platform APIs and product APIs alike.
+
+**Versioning and realms**
+- Customer APIs live under `/v1/`. Internal Altreia APIs live under `/admin/v1/`.
+- Session realms stay strictly separate (§35c A1). A session from the wrong realm gets **401 `INVALID_SESSION_REALM`**, and the response never reveals that the other realm exists.
+
+**Field names and values**
+- JSON field names are `snake_case` everywhere, platform and product APIs alike.
+- IDs are ULID strings; timestamps are Unix epoch integers (§35b).
+- Money is always integer minor units plus an explicit currency code, e.g. `{ "amount": 60000, "currency": "PHP" }`. Floating-point values are never used for stored or calculated money.
+
+**Success responses**
+```json
+{ "data": { ... } }
+{ "data": [ ... ], "page": { "next_cursor": "01J...", "has_more": true } }
+```
+- Lists use cursor pagination. Default page size 25, maximum 100.
+- Offset pagination is not the default for large, changing datasets.
+
+**Error responses**
+```json
+{
+  "error": {
+    "code": "ERROR_CODE",
+    "message": "Human-readable message",
+    "details": {},
+    "request_id": "ULID"
+  }
+}
+```
+- This custom Altreia envelope is the V1 error format. RFC 9457 is not the primary format.
+- Application and frontend behavior depends only on the stable `code`, never on `message`.
+- `details` is optional, structured data (e.g. per-field validation errors).
+- Errors never expose stack traces, SQL/database errors, provider internals, secrets, or sensitive submitted values.
+
+**HTTP status mapping**
+
+| Status | Used for |
+|---|---|
+| 400 | Malformed request |
+| 401 | Not authenticated, or `INVALID_SESSION_REALM` |
+| 403 | Authenticated but not permitted (incl. suspended business) |
+| 403 + `ENTITLEMENT_REQUIRED` | Feature not included in the business's entitlements |
+| 403 + `SUBSCRIPTION_READ_ONLY` | Write attempted on an expired Base subscription (§41) |
+| 404 | Not found, or hidden because revealing it would leak unauthorized information |
+| 409 | Conflict (duplicate, state-transition clash) |
+| 422 | Validation failed |
+| 429 | Rate limited, with `Retry-After` |
+| 500 / 503 | Server error / dependency unavailable |
+
+**Authorization and scope filtering**
+- All authorization and scope filtering happens server-side. The API never returns cross-tenant, cross-sales-rep, or unauthorized product data and relies on the frontend to hide it.
+- Information hiding:
+  - another tenant's record → **404**
+  - a Sales user requesting another Sales user's lead/client → **404**
+  - a Product Admin requesting an ungranted product or its resources → **404** where revealing existence would leak unauthorized information
+  - wrong account realm → **401 `INVALID_SESSION_REALM`**
+
+**Request IDs**
+- Every response includes `request_id` in the body (for errors) and the `X-Request-Id` header (always).
+- The same ID is carried into structured logs and, where practical, into downstream and background operation context (queue messages, jobs), so a failed operation can be traced end to end.
+
+**Error-code registry**
+- One shared platform registry of error codes lives in `platform/`.
+- Products add their own codes only under a product prefix (`NAIL_`, `RENTAL_`, …).
+- Products may not redefine the meaning of shared platform codes.
+
+**Idempotency**
+- `Idempotency-Key` is **not** required for every mutation. It is required for operations where a retry or duplicate submission could cause a meaningful duplicate side effect, at minimum:
+  - recording platform payments
+  - payment-provider operations
+  - commission/payout creation or approval
+  - outbound email sends
+  - external Connected Services actions
+  - bulk imports and other operations that could create duplicate records or actions
+  - any other mutation explicitly classified as high-risk or retry-prone
+- Ordinary Base CRUD (updating a business profile, branding, a note, and similar) does not require a key unless that specific operation carries duplicate-side-effect risk.
+- **Idempotency does not rely only on HTTP headers.** Queued/background jobs and provider-webhook processing use stable operation/event identifiers plus deduplication. No queue, Worker, webhook, network, or user retry may charge twice, record the same payment twice, generate or pay commission twice, send the same transactional action twice, or repeat any other protected external side effect.
+- The database-level protections already locked remain: unique `platform_payments.provider_ref` and unique `(payment_id, sales_user_id, entry_type)` on commission ledger entries (§35c A7).
+
 ## 36. Security Requirements (pre-production)
 
 Secure authentication, secure sessions, role authorization, tenant isolation, cross-tenant security tests, file authorization, rate limiting, upload validation, sensitive document handling, audit logging, data deletion, retention policies, account suspension, account recovery, basic abuse prevention.
@@ -1048,7 +1130,7 @@ The high-level architecture is locked. Before Phase 1 implementation begins, the
 4. ~~Migration naming/versioning convention~~ — **RESOLVED / LOCKED** (see §38a, new)
    - **Phase 0 Amendment A** (internal accounts, product management, sales attribution, commissions) — **RESOLVED / LOCKED** after Item #5 (see §35c)
 5. ~~Development/staging/production configuration~~ — **RESOLVED / LOCKED** (see §39a, new)
-6. API response/error conventions
+6. ~~API response/error conventions~~ — **RESOLVED / LOCKED** (see §35d, new)
 7. Logging conventions
 8. Testing stack
 9. Coding standards
